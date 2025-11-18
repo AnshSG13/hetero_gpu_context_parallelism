@@ -76,6 +76,8 @@ run_benchmark() {
     echo "  Log file: $log_file"
 
     # Run the benchmark and capture output
+    # Don't exit on error - we want to collect timing data even if correctness check fails
+    set +e
     torchrun --nproc_per_node=$num_gpus \
         scripts/llama_ring/benchmark_ring.py \
         --architecture "$ARCHITECTURE" \
@@ -88,6 +90,7 @@ run_benchmark() {
         --run_ring_first \
         --prompt_len $context_len \
         > "$log_file" 2>&1
+    set -e
 
     # Parse results
     local ring_time=$(parse_avg_time "$log_file" "Ring Attention")
