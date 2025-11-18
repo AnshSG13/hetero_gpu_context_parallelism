@@ -129,7 +129,9 @@ echo "Starting benchmarks..."
 echo ""
 
 # Context length scaling with 2 GPUs
-for context_len in 100 1024 2048 4096 8192; do
+# Note: With block_size=4096, we can support up to 8192 tokens with 2 GPUs
+# Limiting max to 1200 to stay under 8192 after tokenization expansion
+for context_len in 100 500 1000 1200; do
     run_benchmark $context_len 2
 done
 
