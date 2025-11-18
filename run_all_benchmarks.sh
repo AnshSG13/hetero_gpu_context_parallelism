@@ -1,152 +1,76 @@
-# runs benchmarks at different context lengths and GPU counts,
-set -e  # Exit on error
+#!/bin/bash
+set -e
 
+# Configuration
 MODEL_PATH="/datasets/ai/llama3/hub/models--meta-llama--Meta-Llama-3.1-8B/snapshots/d04e592bb4f6aa9cfee91e2e20afa771667e1d4b"
-TOKENIZER_PATH="/datasets/ai/llama3/hub/models--meta-llama--Meta-Llama-3.1-8B/snapshots/d04e592bb4f6aa9cfee91e2e20afa771667e1d4b"
-VARIANT="3-8b"
-ARCHITECTURE="llama"
-DEVICE_TYPE="cuda"
-NUM_TOKENS_TO_BENCHMARK=30
-
-# Output files
 RESULTS_DIR="benchmark_results"
-CSV_FILE="$RESULTS_DIR/benchmark_results.csv"
-TABLE_FILE="$RESULTS_DIR/benchmark_table.md"
 LOGS_DIR="$RESULTS_DIR/logs"
+CSV_FILE="$RESULTS_DIR/benchmark_results.csv"
 
-# Create output directories
-mkdir -p "$RESULTS_DIR"
+# Setup
 mkdir -p "$LOGS_DIR"
+echo "Number_Count,Input_Tokens,GPUs,Avg_Time_Token_Ring_ms,Avg_Time_Token_Regular_ms,Speedup,Outputs_Match" > "$CSV_FILE"
 
-# Initialize CSV file with headers
-echo "Context_Length,GPUs,Avg_Time_Token_Ring_ms,Avg_Time_Token_Regular_ms,Speedup,Outputs_Match" > "$CSV_FILE"
-
-# Parse benchmark output to extract average time per token
-parse_avg_time() {
-    local log_file=$1
-    local label=$2
-    grep -A 3 "Summary for $label:" "$log_file" | grep "Average time per token:" | awk '{print $5}'
+# Parse functions
+parse_time() { 
+    grep -A 3 "Summary for $2:" "$1" | grep "Average time per token:" | awk '{print $5}'
 }
 
-check_correctness() {
-    local log_file=$1
-    if grep -q "AssertionError" "$log_file" || grep -q "FAILED" "$log_file"; then
-        echo "FAILED"
-    else
-        echo "PASSED"
-    fi
+parse_input_tokens() { 
+    grep "Input Seq length:" "$1" | awk '{print $NF}'
 }
 
-# Run one benchmark
+check_correctness() { 
+    grep -q "AssertionError\|FAILED" "$1" && echo "FAILED" || echo "PASSED"
+}
+
+# Run benchmark
 run_benchmark() {
-    local context_len=$1
-    local num_gpus=$2
-    local log_file="$LOGS_DIR/benchmark_ctx${context_len}_gpu${num_gpus}.log"
+    local log="$LOGS_DIR/benchmark_numcount${1}_gpu${2}.log"
+    echo "Running: Number Count=$1, GPUs=$2"
 
-    echo "Running benchmark: Context=$context_len, GPUs=$num_gpus"
-    echo "  Log file: $log_file"
-
-    #dont exit if correctness fails
     set +e
-    torchrun --nproc_per_node=$num_gpus \
-        scripts/llama_ring/benchmark_ring.py \
-        --architecture "$ARCHITECTURE" \
-        --variant "$VARIANT" \
+    torchrun --nproc_per_node=$2 scripts/llama_ring/benchmark_ring.py \
+        --architecture llama \
+        --variant 3-8b \
         --model_path "$MODEL_PATH" \
-        --tokenizer "$TOKENIZER_PATH" \
-        --device_type "$DEVICE_TYPE" \
-        --num_tokens_to_benchmark $NUM_TOKENS_TO_BENCHMARK \
+        --tokenizer "$MODEL_PATH" \
+        --device_type cuda \
+        --num_tokens_to_benchmark 30 \
         --batch_size 1 \
         --run_ring_first \
-        --prompt_len $context_len \
-        > "$log_file" 2>&1
+        --prompt_len $1 \
+        > "$log" 2>&1
     set -e
 
-    # Parse results
-    local ring_time=$(parse_avg_time "$log_file" "Ring Attention")
-    local regular_time=$(parse_avg_time "$log_file" "Regular Attention")
-    local correctness=$(check_correctness "$log_file")
-
-    # Calculate speedup 
+    local ring=$(parse_time "$log" "Ring Attention")
+    local reg=$(parse_time "$log" "Regular Attention")
+    local input_tokens=$(parse_input_tokens "$log")
     local speedup="N/A"
-    if [[ -n "$ring_time" && -n "$regular_time" ]]; then
-        speedup=$(echo "scale=2; $regular_time / $ring_time" | bc)
-    fi
+    
+    [[ -n "$ring" && -n "$reg" ]] && speedup=$(echo "scale=2; $reg / $ring" | bc)
 
-    # If ring_time or regular_time is empty, mark as failed
-    if [[ -z "$ring_time" ]]; then
-        ring_time="ERROR"
-    fi
-    if [[ -z "$regular_time" ]]; then
-        regular_time="ERROR"
-    fi
-
-    # Save to CSV
-    echo "$context_len,$num_gpus,$ring_time,$regular_time,$speedup,$correctness" >> "$CSV_FILE"
-
-    echo "  Ring Attention: $ring_time ms/token"
-    echo "  Regular Attention: $regular_time ms/token"
-    echo "  Speedup: ${speedup}x"
-    echo "  Correctness: $correctness"
-    echo ""
+    echo "$1,${input_tokens:-N/A},$2,${ring:-ERROR},${reg:-ERROR},$speedup,$(check_correctness "$log")" >> "$CSV_FILE"
+    echo "  Input Tokens: ${input_tokens:-N/A} | Ring: ${ring:-ERROR} ms/token | Regular: ${reg:-ERROR} ms/token | Speedup: ${speedup}x"
 }
 
-echo "Starting benchmarks..."
-echo ""
-
-for context_len in 100 500 1000 1200; do
-    run_benchmark $context_len 2
+# Run benchmarks
+for num_count in 100 500 1000 1500 2000; do 
+    run_benchmark $num_count 2
 done
 
+# Generate markdown table
+{
+    echo -e "# Ring Attention Benchmark Results\n\n| Number Count | Input Tokens | GPUs | Ring (ms) | Regular (ms) | Speedup | Match |"
+    echo "|--------------|--------------|------|-----------|--------------|---------|-------|"
+    
+    tail -n +2 "$CSV_FILE" | while IFS=',' read num_count tokens gpu ring reg spd corr; do
+        [[ "$ring" != "ERROR" ]] && ring="$ring ms"
+        [[ "$reg" != "ERROR" ]] && reg="$reg ms"
+        [[ "$spd" != "N/A" ]] && spd="${spd}x"
+        echo "| $num_count | $tokens | $gpu | $ring | $reg | $spd | $corr |"
+    done
+} > "$RESULTS_DIR/benchmark_table.md"
 
-# Create markdown table
-cat > "$TABLE_FILE" << EOF
-# Ring Attention Benchmark Results
-
-## Summary Table
-
-| Context Length | GPUs | Avg Time/Token (Ring) | Avg Time/Token (Regular) | Speedup | Outputs Match? |
-|----------------|------|-----------------------|--------------------------|---------|----------------|
-EOF
-
-# Read CSV and format as markdown table
-tail -n +2 "$CSV_FILE" | while IFS=',' read -r ctx gpus ring_time reg_time speedup correctness; do
-    # Format times with "ms" suffix
-    if [[ "$ring_time" != "ERROR" ]]; then
-        ring_display="${ring_time} ms"
-    else
-        ring_display="ERROR"
-    fi
-
-    if [[ "$reg_time" != "ERROR" ]]; then
-        reg_display="${reg_time} ms"
-    else
-        reg_display="ERROR"
-    fi
-
-    # Format speedup
-    if [[ "$speedup" != "N/A" ]]; then
-        speedup_display="${speedup}x"
-    else
-        speedup_display="N/A"
-    fi
-
-    echo "| $ctx            | $gpus    | $ring_display                 | $reg_display                    | $speedup_display       | $correctness          |" >> "$TABLE_FILE"
-done
-
-echo "" >> "$TABLE_FILE"
-echo "## Notes" >> "$TABLE_FILE"
-echo "" >> "$TABLE_FILE"
-echo "- All benchmarks run with $NUM_TOKENS_TO_BENCHMARK tokens generated per test" >> "$TABLE_FILE"
-echo "- Model: $VARIANT" >> "$TABLE_FILE"
-echo "- Speedup calculated as: Regular Time / Ring Time" >> "$TABLE_FILE"
-echo "- Correctness verified by comparing output logits between Ring and Regular attention" >> "$TABLE_FILE"
-
-echo "Results:"
-
-echo ""
-cat "$TABLE_FILE"
-echo ""
-echo "Raw CSV data saved to: $CSV_FILE"
-echo "Markdown table saved to: $TABLE_FILE"
-echo "Individual logs saved to: $LOGS_DIR/"
+cat "$RESULTS_DIR/benchmark_table.md"
+echo -e "\nCSV: $CSV_FILE | Logs: $LOGS_DIR/"
