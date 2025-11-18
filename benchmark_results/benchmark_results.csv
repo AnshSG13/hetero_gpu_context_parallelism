@@ -1,0 +1,5 @@
+Context_Length,GPUs,Avg_Time_Token_Ring_ms,Avg_Time_Token_Regular_ms,Speedup,Outputs_Match
+100,2,1347.31,42.69,.03,FAILED
+500,2,1797.99,148.41,.08,FAILED
+1000,2,2773.55,313.64,.11,FAILED
+1200,2,3653.00,404.69,.11,FAILED
