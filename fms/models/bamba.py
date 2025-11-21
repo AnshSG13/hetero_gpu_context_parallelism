@@ -2,7 +2,7 @@ import dataclasses
 import logging
 import math
 import re
-from typing import Any, List, Mapping, Optional, Tuple
+from typing import Any, List, Mapping, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -198,11 +198,9 @@ class BambaHeadless(nn.Module):
 
         self.embedding = nn.Embedding(self.config.src_vocab_size, self.config.emb_dim)
 
-        rope_scaling = {"rope_type": "ntk" if self.config.ntk_scaling else "regular"}
-
         self.rot_emb = RotaryEmbedding(
             dim=self.config.emb_dim // self.config.nheads,
-            scaling=rope_scaling,
+            ntk_scaling=self.config.ntk_scaling,
             max_seq_len=self.config.max_expected_seq_len,
             ratio=self.config.rope_theta,
             partial_rope=0.5,
@@ -441,7 +439,7 @@ class Bamba(nn.Module):
         mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_value_states: Optional[
-            List[SSMCacheUnit | Tuple[torch.FloatTensor,]]
+            List[Union[SSMCacheUnit, Tuple[torch.FloatTensor,]]]
         ] = None,
         use_cache: bool = False,
         only_last_token: bool = False,

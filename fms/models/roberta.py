@@ -32,7 +32,6 @@ class RoBERTaConfig(ModelConfig):
     activation_fn: str = "gelu"
     classifier_activation_fn: str = "tanh"
     max_pos: int = 512
-    type_vocab_size: int = 1
     p_dropout: float = 0.1
     multiquery_attn: bool = False
     norm_eps: float = 1e-12
@@ -147,11 +146,6 @@ class RoBERTaHeadless(nn.Module):
             final_layers=True,
         )
 
-        self.token_type_embeddings = nn.Embedding(
-            self.config.type_vocab_size,
-            self.config.emb_dim,
-        )
-
         self.enc_norm = self.distributed_strategy.distribute_module(
             nn.LayerNorm(self.config.emb_dim, eps=self.config.norm_eps),
             final_layers=True,
@@ -167,7 +161,6 @@ class RoBERTaHeadless(nn.Module):
                 mean=0.0,
                 std=self.config.emb_dim**-0.5,
             )
-        nn.init.zeros_(self.token_type_embeddings.weight)
         for layer in self.layers:
             for sublayer in ["ln", "ff_ln", "attn", "ff_sub_layer"]:
                 getattr(layer, sublayer).reset_parameters()
@@ -178,7 +171,6 @@ class RoBERTaHeadless(nn.Module):
         x: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.Tensor] = None,
-        token_type_ids: Optional[torch.Tensor] = None,
         attn_algorithm: Optional[str] = None,
     ):
         if mask is None:
@@ -208,19 +200,8 @@ class RoBERTaHeadless(nn.Module):
         if self.config.pad_id is not None:
             position_out = position_out.mul(~is_pad.unsqueeze(-1))
 
-        # token_type_ids should be of size (bs, seq_len), same as input_ids.
-        # depending on task, it may be a zero tensor, but the embeddings may not be,
-        # especially if fine-tuned, returning non-zero token_type_out
-        if token_type_ids is None:
-            token_type_ids = torch.zeros(
-                x.size(),
-                dtype=torch.long,
-                device=x.device,
-            )
-        token_type_out = self.token_type_embeddings(token_type_ids)
-
-        # perform absolute position embedding, including token type embeddings
-        x = x_emb + token_type_out + position_out
+        # perform absolute position embedding
+        x = x_emb + position_out
 
         # layer norm
         x = self.enc_norm(x)
@@ -278,16 +259,11 @@ class RoBERTa(nn.Module):
         x: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.Tensor] = None,
-        token_type_ids: Optional[torch.Tensor] = None,
         attn_algorithm: Optional[str] = None,
     ):
         # run through the encoder layers
         x = self.base_model(
-            x,
-            mask=mask,
-            position_ids=position_ids,
-            token_type_ids=token_type_ids,
-            attn_algorithm=attn_algorithm,
+            x, mask=mask, position_ids=position_ids, attn_algorithm=attn_algorithm
         )
 
         # run through classification head and project to vocab space
@@ -364,16 +340,11 @@ class RoBERTaForQuestionAnswering(nn.Module):
         x: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.Tensor] = None,
-        token_type_ids: Optional[torch.Tensor] = None,
         attn_algorithm: Optional[str] = None,
     ):
         # run through the encoder layers
         x = self.base_model(
-            x,
-            mask=mask,
-            position_ids=position_ids,
-            token_type_ids=token_type_ids,
-            attn_algorithm=attn_algorithm,
+            x, mask=mask, position_ids=position_ids, attn_algorithm=attn_algorithm
         )
 
         # run head and process outputs
@@ -478,10 +449,6 @@ def _hf_to_fms_names(hf_sd: Mapping[str, Any], **kwargs) -> Mapping[str, Any]:
         (
             r"^roberta.embeddings.position_embeddings.weight",
             "base_model.position_embedding.weight",
-        ),
-        (
-            r"^roberta.embeddings.token_type_embeddings.weight",
-            "base_model.token_type_embeddings.weight",
         ),
         (r"^roberta.embeddings.LayerNorm", "base_model.enc_norm"),
         (r"^roberta.encoder.layer", "base_model.layers"),
