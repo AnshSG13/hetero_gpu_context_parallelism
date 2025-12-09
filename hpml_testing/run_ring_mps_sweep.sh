@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Sweep ring-attention prefill timings across sequence lengths and MPS throttling.
-# Uses hpml_testing/benchmark_ring_heterogeneous.sh (2 ranks) and parses the output
+# Uses hpml_testing/benchmark_ring_heterogeneous_William.sh (2 ranks) and parses the output
 # from test_ring_prefill.py for "Avg time per call".
 
 set -euo pipefail
@@ -26,7 +26,7 @@ for weak in ${WEAK_PCTS}; do
     echo "=== weak=${weak}% seq_len=${L} ==="
     # Run the benchmark with the requested throttling and seq len
     STRONG_GPU_PERCENTAGE=${STRONG_PCT} WEAK_GPU_PERCENTAGE=${weak} SEQ_LEN=${L} \
-      bash hpml_testing/benchmark_ring_heterogeneous.sh | tee "${tmp_log}"
+      bash hpml_testing/benchmark_ring_heterogeneous_William.sh | tee "${tmp_log}"
 
     avg_ms=$(grep -oE "Avg time per call: [0-9.]+" "${tmp_log}" | tail -1 | awk '{print $5}')
     if [[ -z "${avg_ms}" ]]; then
