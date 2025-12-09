@@ -25,7 +25,6 @@ def _offdiag_block_stats_kernel(
     """
     Each program handles BLOCK_Q queries for a fixed (b, h), and loops over K in BLOCK_K tiles.
     """
-    print("actually Entering triton kernel")
     # How many query blocks per (b,h)
     Q_BLOCKS = (Q_LEN + BLOCK_Q - 1) // BLOCK_Q
 
@@ -178,7 +177,6 @@ def block_softmax_stats_triton(
     block_q: int = 32,
     block_k: int = 64,
 ):
-    print("Entering triton kernel")
     assert Q.is_cuda and K.is_cuda and V.is_cuda
     B, H, Q_len, D_k = Q.shape
     _, _, K_len, D_v = V.shape
@@ -189,12 +187,10 @@ def block_softmax_stats_triton(
     Q = Q.contiguous()
     K = K.contiguous()
     V = V.contiguous()
-    print("heRE")
     # outputs in fp32 accum dtype
     z_block = torch.zeros((B, H, Q_len, D_v), dtype=torch.float32, device=device)
     l_block = torch.zeros((B, H, Q_len, 1),  dtype=torch.float32, device=device)
     m_block = torch.full((B, H, Q_len, 1), -1e9, dtype=torch.float32, device=device)
-    print("heRE1.5")
     query_indices = query_indices.to(device=device, dtype=torch.long)
     key_indices   = key_indices.to(device=device, dtype=torch.long)
 
@@ -204,11 +200,9 @@ def block_softmax_stats_triton(
     stride_zb, stride_zh, stride_zq, stride_zd = z_block.stride()
     stride_mb, stride_mh, stride_mq, _        = m_block.stride()
     stride_lb, stride_lh, stride_lq, _        = l_block.stride()
-    print("heRE2")
     # grid: number of (b,h,q_block) tiles
     q_blocks = (Q_len + block_q - 1) // block_q
     grid = (B * H * q_blocks,)
-    print("heRE3")
     _offdiag_block_stats_kernel[grid](
         Q, K, V,
         query_indices, key_indices,
@@ -227,7 +221,6 @@ def block_softmax_stats_triton(
         num_warps=4,
         num_stages=2,
     )
-    print("heRE4")
     # add last dim for l/m to match [B,H,Q,1]
     l_block = l_block.unsqueeze(-1).squeeze(-1)  # already [B,H,Q,1]
     m_block = m_block.unsqueeze(-1).squeeze(-1)  # already [B,H,Q,1]
