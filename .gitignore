@@ -13,4 +13,4 @@ fms.egg-info
 ibm_fms.egg-info
 fms/_version.py
 hpml_testing/benchmark_results/
-logs/
+logs/.DS_Store
