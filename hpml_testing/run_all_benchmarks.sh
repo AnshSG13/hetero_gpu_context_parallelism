@@ -39,7 +39,7 @@ run_benchmark() {
       local num_tokens=$1
       local num_gpus=$2
 
-      torchrun --nproc_per_node=$num_gpus benchmark_ring.py \
+      PYTHONPATH="$SCRIPT_DIR/../:$PYTHONPATH" torchrun --nproc_per_node=$num_gpus benchmark_ring.py \
           --architecture llama \
           --variant 3.2-1b \
           --model_path "$MODEL_PATH" \
