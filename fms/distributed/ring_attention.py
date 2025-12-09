@@ -184,7 +184,7 @@ def _ring_attention_pass_kv(
           v = torch.empty((batch_size, nheads, 0, emb_v_per_head), device=x_norm.device, dtype=x_norm.dtype)
 
       scale = attn_module.scale_factor or math.sqrt(attn_module.emb_kq_per_head)
-      accum_dtype = torch.float16
+      accum_dtype = torch.float32
 
       # main ring attention with pass-KV
       out = _compute_attention_ring_pass_kv(
@@ -410,6 +410,7 @@ def _compute_attention_ring_pass_kv(
                     # Need to merge with off-diagonal → use Triton to get stats (rank 1)
                     print(f"[DEBUG rank={strategy.rank}] using Triton for diagonal")
                     key_indices = torch.arange(block_offset, block_offset + cur_len, device=q.device)
+                    # TODO: mask needs to be sliced to [q_start:q_start+Q_len, block_offset:block_offset+K_len] for non-None masks
                     z_block, l_block, m_block = _block_softmax_stats(
                         q_cast, cur_k, cur_v,
                         query_indices, key_indices,
@@ -539,7 +540,6 @@ def _attn_scores(
 
 
 def reset_layer_counter():
-    """Call this before each forward pass to reset the layer counter."""
     global _layer_call_counter, _printed_stream_info
     global _total_compute_ms, _total_comm_ms, _total_bytes
     _layer_call_counter = 0
@@ -550,7 +550,6 @@ def reset_layer_counter():
 
 
 def print_timing_summary(rank: int = 0):
-    """Print aggregate timing summary across all layers. Call after forward pass."""
     if rank != 0:
         return
 
@@ -611,8 +610,6 @@ def _block_softmax_stats_naive(
         l_block: sum_j exp(S_ij - m_block_i)
         z_block: sum_j exp(S_ij - m_block_i) * V_j
     using a naive matmul implementation.
-
-    This is slow but matches the math. Later, replace internals with a CUDA Flash-style kernel.
     """
     B, H, Q_len, Dk = Q.shape
     K_len = K.shape[2]
