@@ -13,7 +13,9 @@ from fms.distributed.strategy import (
     DistributedStrategy,
     NoOpStrategy,
     TensorParallelStrategy,
+    RingAttentionStrategy,
 )
+from fms.distributed.ring_attention import ring_forward
 from fms.modules.attention import (
     AttentionKwargs,
     MultiHeadAttention,
@@ -128,6 +130,16 @@ class LLaMABlock(nn.Module):
         use_cache=False,
         **attn_kwargs: Unpack[AttentionKwargs],
     ):
+        if getattr(self, '_use_ring', False):
+            return ring_forward(
+                self,
+                x,
+                position_ids=position_ids,
+                past_key_value_state=past_key_value_state,
+                use_cache=use_cache,
+                is_causal_mask=attn_kwargs.get("is_causal_mask", True),
+                attn_algorithm=attn_kwargs.get("attn_algorithm", None),
+            )
         # if the cache is not empty, we need to get the kv cache for self and cross attention
         self_attn_past_key_value = past_key_value_state
         # if past_key_value_state is not None:
@@ -215,6 +227,8 @@ class LLaMAHeadless(nn.Module):
         layers = []
         for i in range(self.config.nlayers):
             block: nn.Module = LLaMABlock(self.config, self.rot_emb)
+            block.distributed_strategy = distributed_strategy
+            block._use_ring = isinstance(distributed_strategy, RingAttentionStrategy)
             block = self.distributed_strategy.distribute_layer(block, i)
             layers.append(block)
         self.layers = nn.ModuleList(layers)
@@ -336,6 +350,7 @@ class LLaMAHeadless(nn.Module):
         use_cache=False,
         **attn_kwargs: Unpack[AttentionKwargs],
     ):
+        original_seq_len = x_in.size(1)
         # Embed the given vocabulary indices using the given attention mask, with pre-/post-norm and dropout as specified
         # x_in: batch_size x seq_len
         # mask: batch_size x seq_len x seq_len
@@ -344,6 +359,8 @@ class LLaMAHeadless(nn.Module):
             past_key_value_states = [None for _ in range(len(self.layers))]
         x_in = self.embedding(x_in)
 
+        if isinstance(self.distributed_strategy, RingAttentionStrategy):
+            x_in = self.distributed_strategy.shard_input(x_in)
         # this is the output cache for all the decoder layers
         present_key_value_states = []
 
@@ -367,6 +384,9 @@ class LLaMAHeadless(nn.Module):
         if self.config.p_dropout:
             dec_out = self.dropout(dec_out)
 
+        if isinstance(self.distributed_strategy, RingAttentionStrategy):
+            dec_out = self.distributed_strategy.gather_tensor(dec_out, dim=1)
+            dec_out = dec_out[:, :original_seq_len, :]
         return dec_out, present_key_value_states
 
 
