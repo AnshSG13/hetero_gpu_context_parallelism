@@ -58,7 +58,8 @@ run_benchmark() {
 echo "Ring Attention Benchmark - $(date)" | tee "$LOG_FILE"
 
 #512 1024 4096 8192 16384 32768 65536
-for num_count in 256 512 1024 4096 8192 16384 32768 65536 ; do
+# 256 512 1024 2048 4096 8192 16384 32768 65536
+for num_count in 2048 ; do
     echo "Running: $num_count tokens" | tee -a "$LOG_FILE"
     run_benchmark $num_count $NUM_GPUS 2>&1 | tee -a "$LOG_FILE"
 done
