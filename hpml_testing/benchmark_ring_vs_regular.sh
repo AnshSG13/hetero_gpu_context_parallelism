@@ -12,13 +12,12 @@ set -e
 #"/datasets/ai/llama3/hub/models--meta-llama--Llama-3.2-1B/snapshots/4e20de362430cd3b72f300e6b0f18e50e7166e08"
 #"/datasets/ai/llama3/hub/models--meta-llama--Llama-3.1-8B/snapshots/d04e592bb4f6aa9cfee91e2e20afa771667e1d4b"
 #"/datasets/ai/llama3/hub/models--meta-llama--Llama-3.1-8B/snapshots/d04e592bb4f6aa9cfee91e2e20afa771667e1d4b"
-MODEL_PATH="/datasets/ai/llama3/hub/models--meta-llama--Llama-3.2-1B/snapshots/4e20de362430cd3b72f300e6b0f18e50e7166e08"
+MODEL_PATH="/workspace/llama_hf"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 RESULTS_DIR="benchmark_results"
 NUM_GPUS=2
 
 module load conda/latest
-conda activate context_parallelism
 module load cuda/12.6
 
 SUMMARY_CSV="$RESULTS_DIR/summary_${TIMESTAMP}.csv"
