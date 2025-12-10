@@ -45,7 +45,7 @@ run_benchmark() {
 
       torchrun --nproc_per_node=$num_gpus benchmark_ring.py \
           --architecture llama \
-          --variant 3-8b \
+          --variant 3.1-8b \
           --model_path "$MODEL_PATH" \
           --device_type cuda \
           --num_tokens $num_tokens \
