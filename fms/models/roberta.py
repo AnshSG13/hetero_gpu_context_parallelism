@@ -37,11 +37,8 @@ class RoBERTaConfig(ModelConfig):
     activation_fn: str = "gelu"
     classifier_activation_fn: str = "tanh"
     max_pos: int = 512
-<<<<<<< HEAD
-=======
     pos_emb: str = "roberta"
     type_vocab_size: int = 1
->>>>>>> feature/ring_attention
     p_dropout: float = 0.1
     multiquery_attn: bool = False
     norm_eps: float = 1e-12
