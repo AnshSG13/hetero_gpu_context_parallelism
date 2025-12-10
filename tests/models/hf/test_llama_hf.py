@@ -47,9 +47,6 @@ class LLaMA2HFFixtures(ModelFixtureMixin, HFConfigFixtureMixin, HFModelFixtureMi
 
     @pytest.fixture(scope="class", autouse=True)
     def oss_hf_model(self, fms_hf_model: HFAdaptedLLaMAForCausalLM) -> PreTrainedModel:
-<<<<<<< Updated upstream
-        return convert_to_hf(fms_hf_model)
-=======
 <<<<<<< HEAD
         hf_config = fms_hf_model.config
         oss_hf_model = LlamaForCausalLM(
@@ -145,7 +142,6 @@ class LLaMA2HFFixtures(ModelFixtureMixin, HFConfigFixtureMixin, HFModelFixtureMi
 =======
         return convert_to_hf(fms_hf_model)
 >>>>>>> feature/ring_attention
->>>>>>> Stashed changes
 
 
 class TestLLaMA2HF(
