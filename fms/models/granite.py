@@ -186,13 +186,8 @@ class GraniteHeadless(nn.Module):
         rope_scaling = {"rope_type": "ntk" if self.config.ntk_scaling else "regular"}
 
         self.rot_emb = RotaryEmbedding(
-<<<<<<< HEAD
-            dim=self.config.emb_dim // self.config.nheads,
-            ntk_scaling=self.config.ntk_scaling,
-=======
             dim=self.config.head_dim,
             scaling=rope_scaling,
->>>>>>> feature/ring_attention
             max_seq_len=self.config.max_expected_seq_len,
             ratio=self.config.rope_theta,
         )
