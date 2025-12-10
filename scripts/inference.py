@@ -158,9 +158,15 @@ model = get_model(
     model_path=args.model_path,
     device_type=args.device_type,
     source=args.model_source,
+<<<<<<< HEAD
+    distributed_strategy=distr_strategy,
+    # Pass group only if distributed is initialized
+    group=dist.group.WORLD if args.distributed else None,
+=======
     data_type=default_dtype,
     distributed_strategy=distr_param,
     group=dist.group.WORLD,
+>>>>>>> feature/ring_attention
     fused_weights=not args.unfuse_weights,
 )
 
@@ -253,9 +259,16 @@ def infer(use_cache, do_sample):
     else:
         # without ntk scaling, extending the seq length too far gives bogus results.
         max_seq_len = model.config.max_expected_seq_len
+<<<<<<< HEAD
+
+    # Pass padding_kwargs if they exist
+    current_extra_kwargs = padding_kwargs if padding_kwargs else {}
+
+=======
     if padding_kwargs is None:
         padding_kwargs = {}
     padding_kwargs["attn_name"] = args.attn_name
+>>>>>>> feature/ring_attention
     result = generate(
         model,
         ids,

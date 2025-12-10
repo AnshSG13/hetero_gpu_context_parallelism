@@ -202,6 +202,8 @@ def _map_model_config(architecture, config):
         config_params["attention_multiplier"] = config.attention_multiplier
         config_params["logits_scaling"] = config.logits_scaling
         config_params["embedding_multiplier"] = config.embedding_multiplier
+<<<<<<< HEAD
+=======
         config_params["rope_theta"] = config.rope_theta
         config_params["activation_fn"] = config.hidden_act
         config_params["head_dim"] = getattr(
@@ -222,6 +224,7 @@ def _map_model_config(architecture, config):
         config_params["norm_eps"] = config.rms_norm_eps
         config_params["rope_base"] = config.rope_theta
         config_params["sliding_window"] = config.sliding_window
+>>>>>>> feature/ring_attention
     elif architecture == "BambaForCausalLM":
         inner_dim = config.intermediate_size
         architecture = "bamba"

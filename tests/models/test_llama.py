@@ -182,6 +182,8 @@ class TestLlama2GPTQ(
 
     def test_model_unfused(self, model, signature):
         pytest.skip("weight unfuse is not implemented for GPTQ")
+<<<<<<< HEAD
+=======
 
 
 class LLaMA3Fixtures(ModelFixtureMixin):
@@ -373,3 +375,4 @@ class TestLlama31FP8(
 
     def test_model_unfused(self, model, signature):
         pytest.skip("weight unfuse is not defined for FP8")
+>>>>>>> feature/ring_attention

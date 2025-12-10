@@ -2,8 +2,12 @@ import dataclasses
 import logging
 import math
 import re
+<<<<<<< HEAD
+from typing import Any, List, Mapping, Optional, Tuple, Union
+=======
 from typing import Any, List, Mapping, Optional, Tuple
 from typing_extensions import Unpack
+>>>>>>> feature/ring_attention
 
 import torch
 import torch.nn as nn

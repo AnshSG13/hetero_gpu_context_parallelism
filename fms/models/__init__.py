@@ -499,6 +499,12 @@ def get_model(
     return fms_model
 
 
+<<<<<<< HEAD
+from fms.models import bamba, gpt_bigcode, granite, llama, mixtral, roberta  # noqa: E402
+
+
+__all__ = ["bamba", "gpt_bigcode", "granite", "llama", "mixtral", "roberta"]
+=======
 from fms.models import (  # noqa: E402
     bamba,
     gpt_bigcode,
@@ -525,3 +531,4 @@ __all__ = [
     "siglip_vision",
     "mpnet",
 ]
+>>>>>>> feature/ring_attention

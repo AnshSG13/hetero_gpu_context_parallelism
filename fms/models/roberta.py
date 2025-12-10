@@ -37,8 +37,11 @@ class RoBERTaConfig(ModelConfig):
     activation_fn: str = "gelu"
     classifier_activation_fn: str = "tanh"
     max_pos: int = 512
+<<<<<<< HEAD
+=======
     pos_emb: str = "roberta"
     type_vocab_size: int = 1
+>>>>>>> feature/ring_attention
     p_dropout: float = 0.1
     multiquery_attn: bool = False
     norm_eps: float = 1e-12
@@ -187,8 +190,12 @@ class RoBERTaHeadless(nn.Module):
         self,
         x: torch.Tensor,
         position_ids: Optional[torch.Tensor] = None,
+<<<<<<< HEAD
+        attn_algorithm: Optional[str] = None,
+=======
         token_type_ids: Optional[torch.Tensor] = None,
         **attn_kwargs: Unpack[SDPAAttentionKwargs],
+>>>>>>> feature/ring_attention
     ):
         # We will need this as a default as this will make the assumption that is_causal_mask=False (will not create a causal mask in sdpa)
         # If this was not provided, if attn_name is not given and no mask is given, we will end up with a causal mask
@@ -290,18 +297,26 @@ class RoBERTa(nn.Module):
         self,
         x: torch.Tensor,
         position_ids: Optional[torch.Tensor] = None,
+<<<<<<< HEAD
+        attn_algorithm: Optional[str] = None,
+=======
         token_type_ids: Optional[torch.Tensor] = None,
         **attn_kwargs: Unpack[AttentionKwargs],
+>>>>>>> feature/ring_attention
     ):
         get_attention_type(**attn_kwargs)["validate_attn_kwargs"](
             input_ids=x, position_ids=position_ids, **attn_kwargs
         )
         # run through the encoder layers
         x = self.base_model(
+<<<<<<< HEAD
+            x, mask=mask, position_ids=position_ids, attn_algorithm=attn_algorithm
+=======
             x,
             position_ids=position_ids,
             token_type_ids=token_type_ids,
             **attn_kwargs,
+>>>>>>> feature/ring_attention
         )
 
         # run through classification head and project to vocab space
@@ -453,8 +468,12 @@ class RoBERTaForQuestionAnswering(nn.Module):
         self,
         x: torch.Tensor,
         position_ids: Optional[torch.Tensor] = None,
+<<<<<<< HEAD
+        attn_algorithm: Optional[str] = None,
+=======
         token_type_ids: Optional[torch.Tensor] = None,
         **attn_kwargs: Unpack[AttentionKwargs],
+>>>>>>> feature/ring_attention
     ):
         get_attention_type(**attn_kwargs)["validate_attn_kwargs"](
             input_ids=x, position_ids=position_ids, **attn_kwargs
@@ -462,10 +481,14 @@ class RoBERTaForQuestionAnswering(nn.Module):
 
         # run through the encoder layers
         x = self.base_model(
+<<<<<<< HEAD
+            x, mask=mask, position_ids=position_ids, attn_algorithm=attn_algorithm
+=======
             x,
             position_ids=position_ids,
             token_type_ids=token_type_ids,
             **attn_kwargs,
+>>>>>>> feature/ring_attention
         )
 
         # run head and process outputs

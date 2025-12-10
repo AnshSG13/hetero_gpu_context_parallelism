@@ -1,9 +1,20 @@
 import logging
 import math
 import re
+<<<<<<< Updated upstream
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, Tuple
 from typing_extensions import Unpack
+=======
+<<<<<<< HEAD
+from dataclasses import dataclass
+from typing import Any, List, Mapping, Optional, Tuple
+=======
+from dataclasses import dataclass, field
+from typing import Any, Mapping, Optional, Tuple
+from typing_extensions import Unpack
+>>>>>>> feature/ring_attention
+>>>>>>> Stashed changes
 
 import torch
 import torch.nn as nn
@@ -14,6 +25,7 @@ from fms.distributed.strategy import (
     NoOpStrategy,
     TensorParallelStrategy,
     RingAttentionStrategy,
+<<<<<<< Updated upstream
 )
 from fms.distributed.ring_attention import ring_forward
 from fms.modules.attention import (
@@ -21,6 +33,23 @@ from fms.modules.attention import (
     MultiHeadAttention,
     get_attention_type,
 )
+=======
+)
+from fms.distributed.ring_attention import ring_forward
+from fms.modules.attention import (
+    AttentionKwargs,
+    MultiHeadAttention,
+    get_attention_type,
+)
+<<<<<<< HEAD
+from fms.models.llama_ring import RingAttentionKernel, ring_forward # Import the new kernel
+
+
+from fms.modules.attention import MultiHeadAttention
+from fms.modules.embedding import WordEmbedding
+=======
+>>>>>>> feature/ring_attention
+>>>>>>> Stashed changes
 from fms.modules.feedforward import GatedLinearUnit
 from fms.modules.head import LinearClassificationHead
 from fms.modules.layernorm import LayerNormParameterized
@@ -128,7 +157,16 @@ class LLaMABlock(nn.Module):
         position_ids=None,
         past_key_value_state=None,
         use_cache=False,
+<<<<<<< Updated upstream
         **attn_kwargs: Unpack[AttentionKwargs],
+=======
+<<<<<<< HEAD
+        is_causal_mask=False,
+        attn_algorithm=None
+=======
+        **attn_kwargs: Unpack[AttentionKwargs],
+>>>>>>> feature/ring_attention
+>>>>>>> Stashed changes
     ):
         if getattr(self, '_use_ring', False):
             return ring_forward(
@@ -180,6 +218,10 @@ class LLaMABlock(nn.Module):
             return x
 
 
+<<<<<<< Updated upstream
+=======
+
+>>>>>>> Stashed changes
 class LLaMAHeadless(nn.Module):
     def __init__(
         self,
@@ -226,9 +268,19 @@ class LLaMAHeadless(nn.Module):
 
         layers = []
         for i in range(self.config.nlayers):
+<<<<<<< Updated upstream
             block: nn.Module = LLaMABlock(self.config, self.rot_emb)
             block.distributed_strategy = distributed_strategy
             block._use_ring = isinstance(distributed_strategy, RingAttentionStrategy)
+=======
+<<<<<<< HEAD
+            block: nn.Module = LLaMABlock(self.config, self.rot_emb, distributed_strategy)
+=======
+            block: nn.Module = LLaMABlock(self.config, self.rot_emb)
+            block.distributed_strategy = distributed_strategy
+            block._use_ring = isinstance(distributed_strategy, RingAttentionStrategy)
+>>>>>>> feature/ring_attention
+>>>>>>> Stashed changes
             block = self.distributed_strategy.distribute_layer(block, i)
             layers.append(block)
         self.layers = nn.ModuleList(layers)
@@ -348,7 +400,16 @@ class LLaMAHeadless(nn.Module):
         position_ids=None,
         past_key_value_states=None,
         use_cache=False,
+<<<<<<< Updated upstream
         **attn_kwargs: Unpack[AttentionKwargs],
+=======
+<<<<<<< HEAD
+        attn_algorithm=None,
+        distributed_strategy: Optional[DistributedStrategy] = None,
+=======
+        **attn_kwargs: Unpack[AttentionKwargs],
+>>>>>>> feature/ring_attention
+>>>>>>> Stashed changes
     ):
         original_seq_len = x_in.size(1)
         # Embed the given vocabulary indices using the given attention mask, with pre-/post-norm and dropout as specified
@@ -359,8 +420,40 @@ class LLaMAHeadless(nn.Module):
             past_key_value_states = [None for _ in range(len(self.layers))]
         x_in = self.embedding(x_in)
 
+<<<<<<< Updated upstream
         if isinstance(self.distributed_strategy, RingAttentionStrategy):
             x_in = self.distributed_strategy.shard_input(x_in)
+=======
+<<<<<<< HEAD
+        qlen = x_in.size(1)
+        klen = x_in.size(1)
+
+        # if we are using the cache, the key length needs to be extended with the past keys length
+        if use_cache and past_key_value_states[0] is not None:
+            klen += past_key_value_states[0][0].size(-2)
+
+        # if mask is none, we need to specify causal mask
+        if mask is None:
+            # we are caching and can assume all 1s in the mask
+            if use_cache and klen != 1 and qlen == 1:
+                # b x h x qlen x kvlen
+                is_causal_mask = False
+            else:
+                is_causal_mask = True
+        else:
+            is_causal_mask = False
+
+        x_in = self.shared(x_in)
+
+        if isinstance(distributed_strategy, RingAttentionStrategy):
+            x_in = self.distributed_strategy.shard_input(x_in)
+
+
+=======
+        if isinstance(self.distributed_strategy, RingAttentionStrategy):
+            x_in = self.distributed_strategy.shard_input(x_in)
+>>>>>>> feature/ring_attention
+>>>>>>> Stashed changes
         # this is the output cache for all the decoder layers
         present_key_value_states = []
 
@@ -370,7 +463,16 @@ class LLaMAHeadless(nn.Module):
                 position_ids=position_ids,
                 past_key_value_state=past_key_value_states[i],
                 use_cache=use_cache,
+<<<<<<< Updated upstream
                 **attn_kwargs,
+=======
+<<<<<<< HEAD
+                is_causal_mask=is_causal_mask,
+                attn_algorithm=attn_algorithm
+=======
+                **attn_kwargs,
+>>>>>>> feature/ring_attention
+>>>>>>> Stashed changes
             )
 
             if use_cache:
@@ -384,9 +486,24 @@ class LLaMAHeadless(nn.Module):
         if self.config.p_dropout:
             dec_out = self.dropout(dec_out)
 
+<<<<<<< Updated upstream
         if isinstance(self.distributed_strategy, RingAttentionStrategy):
             dec_out = self.distributed_strategy.gather_tensor(dec_out, dim=1)
             dec_out = dec_out[:, :original_seq_len, :]
+=======
+<<<<<<< HEAD
+        if isinstance(distributed_strategy, RingAttentionStrategy):
+            # Gather the potentially padded tensor
+            gathered_dec_out = distributed_strategy.gather_tensor(dec_out, dim=1)
+            # Slice back to the original sequence length
+            dec_out = gathered_dec_out[:, :original_seq_len, :]
+
+=======
+        if isinstance(self.distributed_strategy, RingAttentionStrategy):
+            dec_out = self.distributed_strategy.gather_tensor(dec_out, dim=1)
+            dec_out = dec_out[:, :original_seq_len, :]
+>>>>>>> feature/ring_attention
+>>>>>>> Stashed changes
         return dec_out, present_key_value_states
 
 
@@ -472,6 +589,13 @@ class LLaMA(nn.Module):
         last_n_tokens: int = 0,
         **attn_kwargs: Unpack[AttentionKwargs],
     ):
+<<<<<<< Updated upstream
+=======
+<<<<<<< HEAD
+        output, cache = self._helper(
+            x, mask, position_ids, past_key_value_states, use_cache, attn_algorithm, self.distributed_strategy
+=======
+>>>>>>> Stashed changes
         get_attention_type(**attn_kwargs)["validate_attn_kwargs"](
             input_ids=x,
             position_ids=position_ids,
@@ -480,6 +604,10 @@ class LLaMA(nn.Module):
         )
         output, cache = self.base_model(
             x, position_ids, past_key_value_states, use_cache, **attn_kwargs
+<<<<<<< Updated upstream
+=======
+>>>>>>> feature/ring_attention
+>>>>>>> Stashed changes
         )
 
         output = gather_outputs(output, last_n_tokens, **attn_kwargs)
