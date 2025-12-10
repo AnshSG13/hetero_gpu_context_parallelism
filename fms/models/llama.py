@@ -1,14 +1,9 @@
 import logging
 import math
 import re
-<<<<<<< HEAD
-from dataclasses import dataclass
-from typing import Any, List, Mapping, Optional, Tuple
-=======
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, Tuple
 from typing_extensions import Unpack
->>>>>>> feature/ring_attention
 
 import torch
 import torch.nn as nn
@@ -26,14 +21,6 @@ from fms.modules.attention import (
     MultiHeadAttention,
     get_attention_type,
 )
-<<<<<<< HEAD
-from fms.models.llama_ring import RingAttentionKernel, ring_forward # Import the new kernel
-
-
-from fms.modules.attention import MultiHeadAttention
-from fms.modules.embedding import WordEmbedding
-=======
->>>>>>> feature/ring_attention
 from fms.modules.feedforward import GatedLinearUnit
 from fms.modules.head import LinearClassificationHead
 from fms.modules.layernorm import LayerNormParameterized
@@ -141,12 +128,7 @@ class LLaMABlock(nn.Module):
         position_ids=None,
         past_key_value_state=None,
         use_cache=False,
-<<<<<<< HEAD
-        is_causal_mask=False,
-        attn_algorithm=None
-=======
         **attn_kwargs: Unpack[AttentionKwargs],
->>>>>>> feature/ring_attention
     ):
         if getattr(self, '_use_ring', False):
             return ring_forward(
@@ -247,13 +229,9 @@ class LLaMAHeadless(nn.Module):
 
         layers = []
         for i in range(self.config.nlayers):
-<<<<<<< HEAD
-            block: nn.Module = LLaMABlock(self.config, self.rot_emb, distributed_strategy)
-=======
             block: nn.Module = LLaMABlock(self.config, self.rot_emb)
             block.distributed_strategy = distributed_strategy
             block._use_ring = isinstance(distributed_strategy, RingAttentionStrategy)
->>>>>>> feature/ring_attention
             block = self.distributed_strategy.distribute_layer(block, i)
             layers.append(block)
         self.layers = nn.ModuleList(layers)
