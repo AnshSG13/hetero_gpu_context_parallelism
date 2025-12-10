@@ -17,8 +17,13 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 RESULTS_DIR="benchmark_results"
 NUM_GPUS=2
 
-module load conda/latest
-module load cuda/12.6
+# module load conda/latest
+# module load cuda/12.6
+
+if command -v module &> /dev/null; then
+  module load conda/latest
+  module load cuda/12.6
+fi
 
 SUMMARY_CSV="$RESULTS_DIR/summary_${TIMESTAMP}.csv"
 LOG_FILE="$RESULTS_DIR/run_${TIMESTAMP}.log"
