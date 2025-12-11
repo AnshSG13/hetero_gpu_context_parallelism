@@ -189,12 +189,10 @@ def block_softmax_stats_triton(
     Q = Q.contiguous()
     K = K.contiguous()
     V = V.contiguous()
-    print("heRE")
     # outputs in fp32 accum dtype
     z_block = torch.zeros((B, H, Q_len, D_v), dtype=torch.float32, device=device)
     l_block = torch.zeros((B, H, Q_len, 1),  dtype=torch.float32, device=device)
     m_block = torch.full((B, H, Q_len, 1), -1e9, dtype=torch.float32, device=device)
-    print("heRE1.5")
     query_indices = query_indices.to(device=device, dtype=torch.long)
     key_indices   = key_indices.to(device=device, dtype=torch.long)
 
@@ -204,11 +202,9 @@ def block_softmax_stats_triton(
     stride_zb, stride_zh, stride_zq, stride_zd = z_block.stride()
     stride_mb, stride_mh, stride_mq, _        = m_block.stride()
     stride_lb, stride_lh, stride_lq, _        = l_block.stride()
-    print("heRE2")
     # grid: number of (b,h,q_block) tiles
     q_blocks = (Q_len + block_q - 1) // block_q
     grid = (B * H * q_blocks,)
-    print("heRE3")
     _offdiag_block_stats_kernel[grid](
         Q, K, V,
         query_indices, key_indices,
