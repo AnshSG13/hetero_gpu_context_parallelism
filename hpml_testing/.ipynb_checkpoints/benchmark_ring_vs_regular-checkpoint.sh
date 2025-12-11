@@ -12,18 +12,18 @@ set -e
 #"/datasets/ai/llama3/hub/models--meta-llama--Llama-3.2-1B/snapshots/4e20de362430cd3b72f300e6b0f18e50e7166e08"
 #"/datasets/ai/llama3/hub/models--meta-llama--Llama-3.1-8B/snapshots/d04e592bb4f6aa9cfee91e2e20afa771667e1d4b"
 #"/datasets/ai/llama3/hub/models--meta-llama--Llama-3.1-8B/snapshots/d04e592bb4f6aa9cfee91e2e20afa771667e1d4b"
-MODEL_PATH="/workspace/.hf_home/hub/models--meta-llama--Llama-3.2-1B/snapshots/4e20de362430cd3b72f300e6b0f18e50e7166e08"
+MODEL_PATH="/workspace/llama-hf/original"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 RESULTS_DIR="benchmark_results"
 NUM_GPUS=2
 
-#module load conda/latest
-#conda activate context_parallelism
-#module load cuda/12.6
+# module load conda/latest
+# module load cuda/12.6
 
-# export NCCL_P2P_DISABLE=1
-# export NCCL_IB_DISABLE=1
-export NCCL_DEBUG=INFO
+if command -v module &> /dev/null; then
+  module load conda/latest
+  module load cuda/12.6
+fi
 
 SUMMARY_CSV="$RESULTS_DIR/summary_${TIMESTAMP}.csv"
 LOG_FILE="$RESULTS_DIR/run_${TIMESTAMP}.log"
@@ -43,9 +43,9 @@ run_benchmark() {
       local num_tokens=$1
       local num_gpus=$2
 
-      PYTHONPATH="$SCRIPT_DIR/../:$PYTHONPATH" torchrun --nproc_per_node=$num_gpus benchmark_ring.py \
+      torchrun --nproc_per_node=$num_gpus benchmark_ring.py \
           --architecture llama \
-          --variant 3.2-1b \
+          --variant 3.1-8b \
           --model_path "$MODEL_PATH" \
           --device_type cuda \
           --num_tokens $num_tokens \
@@ -58,7 +58,8 @@ run_benchmark() {
 echo "Ring Attention Benchmark - $(date)" | tee "$LOG_FILE"
 
 #512 1024 4096 8192 16384 32768 65536
-for num_count in 256 512 1024 4096 8192 ; do
+# 256 512 1024 2048 4096 8192 16384 32768 65536
+for num_count in 2048 ; do
     echo "Running: $num_count tokens" | tee -a "$LOG_FILE"
     run_benchmark $num_count $NUM_GPUS 2>&1 | tee -a "$LOG_FILE"
 done

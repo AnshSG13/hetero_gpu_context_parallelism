@@ -20,7 +20,7 @@ DTYPE=${DTYPE:-float16}
 NUM_ITERS=${NUM_ITERS:-20}
 WARMUP_ITERS=${WARMUP_ITERS:-5}
 BG_STREAMS=${BG_STREAMS:-0}
-OUT_CSV=${OUT_CSV:-"results/matmul_mps_sweep.csv"}
+OUT_CSV=${OUT_CSV:-"results/matmul_mps_sweep_$(date +%Y%m%d_%H%M%S).csv"}
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 RESULTS_DIR=$(dirname "$OUT_CSV")
