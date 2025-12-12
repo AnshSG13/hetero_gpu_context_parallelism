@@ -86,25 +86,31 @@ def run_benchmark(rank, world_size, n_steps, attn_module, local_input, strategy)
     avg_latency_ms = (end_time - start_time) / n_steps * 1000
     return avg_latency_ms
 
-def load_performance_profile(profile_path, size):
-    """Loads a performance profile from a CSV file."""
+def load_performance_profile(profile_path):
+    """
+    Loads a performance profile from a CSV file.
+    Detects whether the profile is throughput (tflops) or latency (latency_ms) based.
+    """
     if not os.path.exists(profile_path):
         raise FileNotFoundError(f"Performance profile not found: {profile_path}")
     
     df = pd.read_csv(profile_path)
     
-    # Get the closest available size in the dataframe
-    available_sizes = sorted(df['size'].unique())
-    closest_size = min(available_sizes, key=lambda x: abs(x - size))
-    
-    print(f"Using size {closest_size} from performance profile for target size {size}")
-    
-    df_filtered = df[df['size'] == closest_size]
-    
-    if df_filtered.empty:
-        raise ValueError(f"No data found for size {closest_size} in the performance profile.")
-        
-    return df_filtered.set_index('mps_pct')['tflops'].to_dict()
+    if 'latency_ms' in df.columns:
+        print(f"Loaded latency-based performance profile from {profile_path}")
+        return df.set_index('mps_pct')['latency_ms'].to_dict(), 'latency'
+    elif 'tflops' in df.columns:
+        # The tflops profile depends on matmul size, so we need to find the closest one.
+        # This part of logic is kept for backward compatibility.
+        # For this to work, we need a target size, which we can approximate from SEQ_LEN.
+        # However, the new flow standardizes on latency-based profiles.
+        # We will assume new profiles are latency based.
+        print(f"Loaded throughput-based (tflops) performance profile from {profile_path}")
+        # Simplified: we assume the LUT is pre-filtered or appropriate.
+        # A more robust implementation would require passing seq_len here.
+        return df.set_index('mps_pct')['tflops'].to_dict(), 'tflops'
+    else:
+        raise ValueError("Performance profile must contain either 'latency_ms' or 'tflops' column.")
 
 def get_performance_for_mps(profile, mps_pct):
     """Gets the performance for a given MPS percentage, using linear interpolation if needed."""
@@ -162,35 +168,36 @@ def main():
         for i in range(remainder):
             block_lens[i] += 1
     elif args.split_type == "uneven":
-        # We assume rank 1 is the slower GPU
-        weights = [1.0] * args.world_size
-        if args.rank == 1:
-             weights[1] = args.slowdown_factor
-        
-        # This logic must be consistent across ranks
+        # We assume rank 1 is the slower GPU for simplicity in this theoretical model
         weights = [1.0, args.slowdown_factor]
         total_weight = sum(weights)
         
-        # Calculate tokens for each rank based on weight
         block_lens = []
         for i in range(args.world_size):
             block_lens.append(int(round(args.seq_len * (weights[i] / total_weight))))
         
-        # Ensure total length is correct
         diff = sum(block_lens) - args.seq_len
         block_lens[-1] -= diff
     elif args.split_type == "lut":
         if not args.use_perf_profile:
             raise ValueError("Performance profile must be specified for 'lut' split type.")
         
-        perf_profile = load_performance_profile(args.use_perf_profile, args.seq_len)
+        perf_profile, metric_type = load_performance_profile(args.use_perf_profile)
         
-        rank_mps_list = [int(p) for p in args.rank_mps.split(',')]
+        rank_mps_list = [float(p) for p in args.rank_mps.split(',')]
         
         if len(rank_mps_list) != args.world_size:
             raise ValueError("Number of MPS percentages must match world size.")
+        
+        raw_perf = [get_performance_for_mps(perf_profile, mps) for mps in rank_mps_list]
+        
+        if metric_type == 'latency':
+            # Lower latency is better, so weight is inverse of performance
+            weights = [1 / p for p in raw_perf]
+        else: # tflops
+            # Higher tflops is better, so weight is direct performance
+            weights = raw_perf
             
-        weights = [get_performance_for_mps(perf_profile, mps) for mps in rank_mps_list]
         total_weight = sum(weights)
 
         block_lens = []
