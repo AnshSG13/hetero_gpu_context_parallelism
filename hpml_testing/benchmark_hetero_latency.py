@@ -6,6 +6,7 @@ import math
 
 from fms.distributed.strategy import RingAttentionStrategy
 from fms.modules.attention import MultiHeadAttention
+from fms.modules.positions import RotaryEmbedding
 from fms.distributed.ring_attention import _ring_attention_pass_kv, reset_layer_counter
 
 def setup_distributed(rank, world_size):
@@ -20,9 +21,20 @@ def setup_distributed(rank, world_size):
 
 def get_model_and_input(rank, world_size, seq_len, n_heads, emb_dim, block_lens):
     """Creates a dummy attention module and input tensor."""
+    
+    head_dim = emb_dim // n_heads
+    
+    # Correctly instantiate the position encoder
+    rope = RotaryEmbedding(dim=head_dim)
+    
     # This would normally be part of a larger model
     attn_module = MultiHeadAttention(
-        emb_dim, n_heads, kvheads=n_heads, rotary_emb_dim=emb_dim // n_heads
+        emb_dim,
+        emb_kq=head_dim,
+        emb_v=head_dim,
+        nheads=n_heads,
+        kvheads=n_heads,
+        position_encoder=rope
     ).cuda()
 
     # Create dummy input data for the entire sequence
