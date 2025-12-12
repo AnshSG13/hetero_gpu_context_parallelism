@@ -11,8 +11,7 @@
 
   set -e
 
-  MODEL_PATH="/datasets/ai/llama3/hub/models--meta-llama--Llama-3.2-1B/snapshots/4e20de362430cd3b72f3
-  00e6b0f18e50e7166e08"
+  MODEL_PATH="/datasets/ai/llama3/hub/models--meta-llama--Llama-3.2-1B/snapshots/4e20de362430cd3b72f300e6b0f18e50e7166e08"
   TIMESTAMP=$(date +%Y%m%d_%H%M%S)
   RESULTS_DIR="benchmark_results"
 
@@ -35,7 +34,7 @@
 
       echo "  Tokens: $num_tokens"
       python benchmark_regular.py \
-          --architecture llama \
+          --architecture hf_pretrained \
           --variant 3.2-1b \
           --model_path "$MODEL_PATH" \
           --device_type cuda \
@@ -50,7 +49,7 @@
   echo "" | tee -a "$LOG_FILE"
 
   # Test various context lengths
-  for num_tokens in 256 512 1024 2048 4096 8192 16384; do
+  for num_tokens in 256 512 1024 2048 4096 8192 16384 32768; do
       echo "Running: $num_tokens tokens" | tee -a "$LOG_FILE"
       run_benchmark $num_tokens 2>&1 | tee -a "$LOG_FILE"
       echo "" | tee -a "$LOG_FILE"

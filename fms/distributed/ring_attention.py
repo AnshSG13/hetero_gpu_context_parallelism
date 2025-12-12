@@ -9,7 +9,7 @@ from fms.modules.attention import MultiHeadAttention
 from fms.distributed.strategy import DistributedStrategy, RingAttentionStrategy
 
 # Use Triton only when block size is big enough (Q_len*K_len)
-_TRITON_MIN_WORK = 2048
+_TRITON_MIN_WORK = 204800000000000000000000
 # 4096000000000  # or 16384, tune based on your profiling
 
 try:
@@ -266,7 +266,7 @@ def _print_stream_info(strategy):
 
     default_stream = torch.cuda.current_stream()
     streams_different = strategy._comm_stream != default_stream
-    print(f"[Ring Attention] Using separate streams: {streams_different}")
+    print(f"Using separate streams: {streams_different}")
 
 
 def _has_offdiag_contribution(strategy: RingAttentionStrategy, q_start: int, q_len: int, causal: bool) -> bool:

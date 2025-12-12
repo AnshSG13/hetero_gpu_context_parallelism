@@ -20,7 +20,7 @@ module load conda/latest
 conda activate context_parallelism
 module load cuda/12.6
 
-export NCCL_DEBUG=INFO
+#export NCCL_DEBUG=INFO
 
 SUMMARY_CSV="$RESULTS_DIR/ring_${TIMESTAMP}.csv"
 LOG_FILE="$RESULTS_DIR/ring_${TIMESTAMP}.log"
@@ -58,6 +58,7 @@ run_ring_benchmark() {
         --nproc_per_node=$num_gpus \
         --master_port=$master_port \
         benchmark_ring.py \
+        --strategy ring \
         --architecture hf_pretrained \
         --model_path "$MODEL_PATH" \
         --device_type cuda \
@@ -74,7 +75,8 @@ echo "Ring Attention Benchmark - $(date)" | tee "$LOG_FILE"
 echo "" | tee -a "$LOG_FILE"
 
 # Test various context lengths
-for num_tokens in 256 512 1024 2048 4096 8192 16384 32768 65536 131072 262144; do
+#256 512 1024 2048 4096 8192 16384 32768 65536 131072 262144
+for num_tokens in 256 512 1024 2048 4096 8192 16384 ; do
     echo "tokens=$num_tokens START" | tee -a "$LOG_FILE"
 
     echo "[ring] tokens=$num_tokens gpus=$NUM_GPUS" | tee -a "$LOG_FILE"

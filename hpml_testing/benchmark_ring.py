@@ -1,4 +1,4 @@
-"""Benchmark script for comparing Ring Attention vs Regular Attention."""
+"""Benchmark script for Ring Attention or Regular Attention."""
 
 import argparse
 import os
@@ -11,7 +11,6 @@ import torch.distributed as dist
 from pathlib import Path
 
 from fms import models
-from fms.utils import tokenizers
 from fms.distributed.strategy import NoOpStrategy
 from fms.distributed.ring_attention import reset_layer_counter, print_timing_summary
 
@@ -24,21 +23,20 @@ def print0(*args, **kwargs):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Benchmark Ring vs Regular Attention")
+    parser = argparse.ArgumentParser(description="Benchmark Ring or Regular Attention")
     script_path = Path(__file__).resolve()
     repo_dir = script_path.parents[2]
     model_dir = repo_dir.parent / "llama-hf"
 
+    parser.add_argument("--strategy", type=str, default="ring", choices=["ring", "regular"],
+                        help="Attention strategy: 'ring' (distributed) or 'regular' (single GPU)")
     parser.add_argument("--device_type", type=str, default="cuda", choices=["cuda", "cpu"])
-    parser.add_argument("--architecture", type=str, default="llama")
+    parser.add_argument("--architecture", type=str, default="hf_pretrained")
     parser.add_argument("--variant", type=str, default="8b")
     parser.add_argument("--model_path", type=str, default=str(model_dir))
-    parser.add_argument("--tokenizer", type=str, default=str(model_dir / "tokenizer.model"))
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--num_tokens", type=int, required=True, help="Number of prompt tokens")
-    parser.add_argument("--num_decode_tokens", type=int, default=30, help="Number of tokens to decode")
-    parser.add_argument("--run_ring_first", action="store_true", default=True)
-    parser.add_argument("--no-run_ring_first", dest="run_ring_first", action="store_false")
+    parser.add_argument("--num_decode_tokens", type=int, default=0, help="Number of tokens to decode")
     parser.add_argument("--summary_csv", type=str, default=None, help="Summary CSV path (appends)")
     parser.add_argument("--dtype", type=str, default="float16", choices=["float32", "float16", "bfloat16"])
     parser.add_argument("--disable_flash", action="store_true", default=False,
@@ -47,13 +45,19 @@ def parse_args():
     return parser.parse_args()
 
 
-def setup_model(args, strategy, dtype):
+def setup_model(args, dtype):
+    """Load model with specified strategy."""
+    is_ring = (args.strategy == "ring")
+
     # Compute block_lens for ring attention
     block_lens = None
-    if strategy == "ring" and dist.is_initialized():
+    if is_ring and dist.is_initialized():
         world_size = dist.get_world_size()
         local_len = args.num_tokens // world_size
         block_lens = [local_len] * world_size
+
+    # Set distributed strategy
+    distributed_strategy = "ring" if is_ring else NoOpStrategy
 
     # For hf_pretrained, don't pass variant or source - let it infer from model_path
     if args.architecture == "hf_pretrained":
@@ -61,7 +65,7 @@ def setup_model(args, strategy, dtype):
             args.architecture,
             model_path=args.model_path,
             device_type=args.device_type,
-            distributed_strategy=strategy,
+            distributed_strategy=distributed_strategy,
             block_lens=block_lens,
             data_type=dtype
         )
@@ -72,7 +76,7 @@ def setup_model(args, strategy, dtype):
             model_path=args.model_path,
             device_type=args.device_type,
             source="hf",
-            distributed_strategy=strategy,
+            distributed_strategy=distributed_strategy,
             block_lens=block_lens,
             data_type=dtype
         )
@@ -149,26 +153,34 @@ def main():
     local_rank = int(os.getenv("LOCAL_RANK", 0))
     world_size = int(os.getenv("WORLD_SIZE", 1))
 
-    # Initialize distributed
-    if world_size > 1 and args.device_type == "cuda":
-        print('multiple gpus found')
+    is_ring = (args.strategy == "ring")
+
+    # Validate strategy requirements
+    if is_ring and world_size <= 1:
+        print("ERROR: Ring attention requires multiple GPUs. Use: torchrun --nproc_per_node=2 benchmark_ring.py --strategy ring ...")
+        return
+
+    # Initialize distributed for ring attention
+    if is_ring and args.device_type == "cuda":
         torch.cuda.set_device(local_rank)
         if not dist.is_initialized():
-            print("stuck here?")
             dist.init_process_group(backend="nccl")
-            print("stuck here")
         device = torch.device("cuda", local_rank)
     else:
-        device = torch.device(args.device_type)
-    print('hi')
-    # Disable FlashAttention if requested (for fair comparison with ring attention)
+        # Regular attention: single GPU
+        if args.device_type == "cuda":
+            device = torch.device("cuda:0")
+            torch.cuda.set_device(0)
+        else:
+            device = torch.device(args.device_type)
+
+    # Disable FlashAttention if requested
     if args.disable_flash:
         torch.backends.cuda.enable_flash_sdp(False)
         torch.backends.cuda.enable_mem_efficient_sdp(False)
-        torch.backends.cuda.enable_math_sdp(True)  # Force naive math backend
-        print0("FlashAttention DISABLED - using naive math attention for fair comparison")
+        torch.backends.cuda.enable_math_sdp(True)
+        print0("FlashAttention DISABLED - using math attention")
     else:
-        # Print what backends are available/enabled
         print0(f"SDPA backends: flash={torch.backends.cuda.flash_sdp_enabled()}, "
                f"mem_efficient={torch.backends.cuda.mem_efficient_sdp_enabled()}, "
                f"math={torch.backends.cuda.math_sdp_enabled()}")
@@ -176,73 +188,51 @@ def main():
     dtype = getattr(torch, args.dtype)
     torch.set_default_dtype(dtype)
 
-    # Create random input tokens (use hardcoded vocab range to avoid tokenizer loading issues)
-    # LLaMA vocab is typically 32000-128256, use safe range
+    # Create random input tokens
     vocab_size = 128256
     ids = torch.randint(100, vocab_size - 100, (args.batch_size, args.num_tokens), dtype=torch.long, device=device)
 
-    # Synchronize random tokens across ranks
-    if world_size > 1:
+    # Synchronize random tokens across ranks (for ring attention)
+    if is_ring and world_size > 1:
         dist.broadcast(ids, src=0)
 
-    print0(f"Benchmark: {args.num_tokens} prompt tokens, {args.num_decode_tokens} decode tokens")
+    print0(f"Benchmark [{args.strategy.upper()}]: {args.num_tokens} prompt tokens, {args.num_decode_tokens} decode tokens")
 
-    # Define strategies
-    strategies = [("Ring", "ring"), ("Regular", NoOpStrategy)]
-    if not args.run_ring_first:
-        strategies.reverse()
+    # Setup and run benchmark
+    if args.device_type == "cuda":
+        torch.cuda.empty_cache()
 
-    results = []
-    for label, strategy in strategies:
-        # Skip Ring if not distributed
-        if strategy == "ring" and not dist.is_initialized():
-            print0(f"Skipping {label} (requires distributed)")
-            continue
+    model = setup_model(args, dtype)
+    label = "Ring" if is_ring else "Regular"
+    result = run_benchmark(model, ids, args.num_decode_tokens, label, device, is_ring=is_ring)
+    result["strategy"] = label
 
-        # Regular only runs on rank 0
-        is_regular = strategy is NoOpStrategy
-        should_run = not (is_regular and rank != 0)
-
-        if should_run:
-            if args.device_type == "cuda":
-                torch.cuda.empty_cache()
-
-            model = setup_model(args, strategy, dtype)
-            is_ring = (strategy == "ring")
-            result = run_benchmark(model, ids, args.num_decode_tokens, label, device, is_ring=is_ring)
-            result["strategy"] = label
-            results.append(result)
-
-            del model
-            gc.collect()
-            if args.device_type == "cuda":
-                torch.cuda.empty_cache()
-
-        # ALL ranks sync here (same barrier for everyone)
-        if world_size > 1:
-            dist.barrier()
+    del model
+    gc.collect()
+    if args.device_type == "cuda":
+        torch.cuda.empty_cache()
 
     # Write summary CSV
-    if rank == 0 and args.summary_csv and results:
+    if rank == 0 and args.summary_csv:
         file_exists = os.path.exists(args.summary_csv)
         with open(args.summary_csv, "a", newline="") as f:
             writer = csv.writer(f)
             if not file_exists:
                 writer.writerow(SUMMARY_HEADERS)
-            for r in results:
-                writer.writerow([r["strategy"], args.num_tokens, f"{r['ttft_ms']:.2f}",
-                                f"{r['avg_decode_ms']:.2f}", f"{r['total_time_ms']:.2f}"])
+            writer.writerow([result["strategy"], args.num_tokens, f"{result['ttft_ms']:.2f}",
+                            f"{result['avg_decode_ms']:.2f}", f"{result['total_time_ms']:.2f}"])
 
     # Print summary table
-    if rank == 0 and results:
+    if rank == 0:
         print0(f"\n{'Strategy':<10} {'Tokens':<8} {'TTFT':<10} {'Avg Decode':<12} {'Total':<10}")
         print0("-" * 50)
-        for r in results:
-            print0(f"{r['strategy']:<10} {args.num_tokens:<8} {r['ttft_ms']:<10.2f} {r['avg_decode_ms']:<12.2f} {r['total_time_ms']:<10.2f}")
-    print("printed results")
-    if world_size > 1 and dist.is_initialized():
-        print("hanging at dist.barrier()")
+        print0(f"{result['strategy']:<10} {args.num_tokens:<8} {result['ttft_ms']:<10.2f} {result['avg_decode_ms']:<12.2f} {result['total_time_ms']:<10.2f}")
+
+    # Final barrier for distributed
+    if is_ring and dist.is_initialized():
         dist.barrier()
+
+
 if __name__ == "__main__":
     try:
         main()
