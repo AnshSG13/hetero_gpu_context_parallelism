@@ -39,4 +39,4 @@ echo "--------------------------------------------------"
 # Set the environment variables and launch the benchmark with torchrun
 CUDA_VISIBLE_DEVICES=$GPUS \
 CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$MPS_PERCENTAGES \
-torchrun --nproc_per_node=$NPROC_PER_NODE hpml_testing/compare_ring_attn_splits.py
+torchrun --nproc_per_node=$NPROC_PER_NODE "$(dirname "$0")/compare_ring_attn_splits.py"
