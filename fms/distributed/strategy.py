@@ -230,8 +230,15 @@ class RingAttentionStrategy(DistributedStrategy):
             self._local_valid_len = seq_len
             return x
 
-        if self.block_size is None or seq_len > self.block_size:
+        # if self.block_size is None or seq_len > self.block_size:
+        #     self.block_size = math.ceil(seq_len / self.world_size)
+        if self.block_size is None:
             self.block_size = math.ceil(seq_len / self.world_size)
+        else:
+            # Sanity check: block_size should be >= all block_lens
+            assert self.block_size >= max(self.block_lens), (
+                f"block_size={self.block_size} < max(block_lens)={max(self.block_lens)}"
+            )
         start = self.block_starts[self.rank]
         length = self.block_lens[self.rank]
         end = min(start + length, seq_len)
