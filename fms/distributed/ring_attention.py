@@ -645,20 +645,6 @@ def _block_softmax_stats(
     mask: Optional[Tensor],
     causal: bool,
 ) -> Tuple[Tensor, Tensor, Tensor]:
-    # Triton path
-    if _HAS_TRITON and Q.is_cuda:
-        work = Q.shape[2] * K.shape[2]  # Q_block_len * K_block_len
-
-        if work < _TRITON_MIN_WORK:
-            # too small to benefit from Triton – kernel launch overhead dominates
-            return _block_softmax_stats_naive(
-                Q, K, V, query_indices, key_indices, scale, mask, causal
-            )
-
-        return block_softmax_stats_triton(
-            Q, K, V, query_indices, key_indices, scale, mask, causal
-        )
-
     # Fallback: pure PyTorch, correct but slower
     return _block_softmax_stats_naive(
         Q, K, V, query_indices, key_indices, scale, mask, causal
