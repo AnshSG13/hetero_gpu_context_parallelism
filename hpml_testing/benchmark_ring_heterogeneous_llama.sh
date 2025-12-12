@@ -50,7 +50,6 @@ run_mode () {
         --batch_size $BATCH_SIZE \
         --num_tokens $SEQ_LEN \
         --num_decode_tokens $NUM_DECODE_TOKENS \
-        # --disable_flash \
         --summary_csv "$SCRIPT_DIR/llama_hetero_${shard_mode}.csv" &
 
     # Rank 1 (strong GPU)
@@ -65,7 +64,6 @@ run_mode () {
         --batch_size $BATCH_SIZE \
         --num_tokens $SEQ_LEN \
         --num_decode_tokens $NUM_DECODE_TOKENS \
-        # --disable_flash \
         --summary_csv "$SCRIPT_DIR/llama_hetero_${shard_mode}.csv" &
 
     wait
