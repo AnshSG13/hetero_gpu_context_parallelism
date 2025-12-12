@@ -4,7 +4,7 @@ import torch
 
 
 @triton.jit
-def _offdiag_block_stats_kernel(
+def _block_stats_kernel(
     Q_ptr, K_ptr, V_ptr,
     query_idx_ptr, key_idx_ptr,
     Z_ptr, M_ptr, L_ptr,
@@ -178,7 +178,7 @@ def block_softmax_stats_triton(
     block_q: int = 32,
     block_k: int = 64,
 ):
-    print("Entering triton kernel")
+    #print("Entering triton kernel")
     assert Q.is_cuda and K.is_cuda and V.is_cuda
     B, H, Q_len, D_k = Q.shape
     _, _, K_len, D_v = V.shape
@@ -205,7 +205,7 @@ def block_softmax_stats_triton(
     # grid: number of (b,h,q_block) tiles
     q_blocks = (Q_len + block_q - 1) // block_q
     grid = (B * H * q_blocks,)
-    _offdiag_block_stats_kernel[grid](
+    _block_stats_kernel[grid](
         Q, K, V,
         query_indices, key_indices,
         z_block, m_block, l_block,
@@ -223,7 +223,7 @@ def block_softmax_stats_triton(
         num_warps=4,
         num_stages=2,
     )
-    print("heRE4")
+    #print("heRE4")
     # add last dim for l/m to match [B,H,Q,1]
     l_block = l_block.unsqueeze(-1).squeeze(-1)  # already [B,H,Q,1]
     m_block = m_block.unsqueeze(-1).squeeze(-1)  # already [B,H,Q,1]
