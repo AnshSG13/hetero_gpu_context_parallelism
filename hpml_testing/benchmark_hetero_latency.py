@@ -35,7 +35,7 @@ def get_model_and_input(rank, world_size, seq_len, n_heads, emb_dim, block_lens)
         nheads=n_heads,
         kvheads=n_heads,
         position_encoder=rope
-    ).cuda()
+    ).cuda().to(torch.bfloat16)
 
     # Create dummy input data for the entire sequence
     full_input = torch.randn(
