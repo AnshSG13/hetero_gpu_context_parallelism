@@ -11,7 +11,7 @@ OUTPUT_DIR = "hpml_testing/plots"
 def create_plots(csv_path):
     """
     Reads the sweep results from a CSV file and generates plots
-    to compare the performance of different split strategies.
+    to show the speedup of different split strategies relative to the 'even' baseline.
     """
     if not os.path.exists(csv_path):
         print(f"Error: Input CSV file not found at {csv_path}")
@@ -22,62 +22,60 @@ def create_plots(csv_path):
 
     df = pd.read_csv(csv_path)
 
-    # --- 1. Grouped Bar Charts ---
-    # This plot directly compares the latency of the three methods for each scenario.
-    print("Generating grouped bar charts...")
+    # --- Data Transformation for Speedup Calculation ---
+    # Pivot the table to get latency for each split_type in columns
+    pivot_df = df.pivot_table(
+        index=['seq_len', 'slowdown_pct'],
+        columns='split_type',
+        values='overall_latency_ms'
+    ).reset_index()
+
+    # Calculate speedup relative to the 'even' baseline
+    pivot_df['uneven_speedup'] = pivot_df['even'] / pivot_df['uneven']
+    pivot_df['lut_speedup'] = pivot_df['even'] / pivot_df['lut']
+
+    # Melt the DataFrame back into a long format for plotting
+    speedup_df = pivot_df.melt(
+        id_vars=['seq_len', 'slowdown_pct'],
+        value_vars=['uneven_speedup', 'lut_speedup'],
+        var_name='split_type',
+        value_name='speedup'
+    )
+    # Clean up the 'split_type' names
+    speedup_df['split_type'] = speedup_df['split_type'].str.replace('_speedup', '')
+
+
+    # --- Grouped Bar Charts for Speedup ---
+    print("Generating speedup bar charts...")
     g_bar = sns.catplot(
-        data=df,
+        data=speedup_df,
         x="slowdown_pct",
-        y="overall_latency_ms",
+        y="speedup",
         hue="split_type",
         col="seq_len",
         kind="bar",
         height=5,
         aspect=1.2,
-        sharey=False,  # Allow y-axes to have different scales for each facet
+        sharey=True,  # Y-axis (speedup) should be shared for better comparison
         legend_out=True
     )
-    g_bar.fig.suptitle("Latency Comparison by Sequence Length and Slowdown", y=1.03)
-    g_bar.set_axis_labels("Slowdown Percentage for Rank 1", "Overall Latency (ms)")
+    g_bar.fig.suptitle("Speedup vs Even Split Baseline", y=1.03)
+    g_bar.set_axis_labels("Slowdown Percentage for Rank 1", "Speedup (Higher is Better)")
     g_bar.set_titles("Sequence Length: {col_name}")
     g_bar.despine(left=True)
+
+    # Add a horizontal line at y=1.0 to represent the baseline
     for ax in g_bar.axes.flat:
-        ax.set_yscale('log') # Use log scale as latency can vary greatly
+        ax.axhline(y=1.0, color='r', linestyle='--', linewidth=2, label='Baseline (Even Split)')
         ax.grid(axis='y', linestyle='--', alpha=0.7)
 
-    bar_chart_path = os.path.join(OUTPUT_DIR, "sweep_latency_bar_charts.png")
+    # Handle legend
+    plt.legend()
+    
+    bar_chart_path = os.path.join(OUTPUT_DIR, "sweep_speedup_bar_charts.png")
     g_bar.savefig(bar_chart_path)
-    print(f"Bar charts saved to {bar_chart_path}")
+    print(f"Speedup bar charts saved to {bar_chart_path}")
 
-
-    # --- 2. Line Charts ---
-    # This plot shows the performance trend and robustness of each method.
-    print("Generating line charts...")
-    g_line = sns.relplot(
-        data=df,
-        x="slowdown_pct",
-        y="overall_latency_ms",
-        hue="split_type",
-        style="split_type",
-        col="seq_len",
-        kind="line",
-        height=5,
-        aspect=1.2,
-        facet_kws={'sharey': False}, # Fix: moved sharey here
-        legend="full",
-        markers=True,
-        dashes=False
-    )
-    g_line.despine(left=True)
-    for ax in g_line.axes.flat:
-        ax.invert_xaxis() # Show slowdown getting worse from left to right
-        ax.set_yscale('log') # Use log scale
-        ax.grid(axis='y', linestyle='--', alpha=0.7)
-        ax.grid(axis='x', linestyle='--', alpha=0.5)
-
-    line_chart_path = os.path.join(OUTPUT_DIR, "sweep_latency_line_charts.png")
-    g_line.savefig(line_chart_path)
-    print(f"Line charts saved to {line_chart_path}")
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
