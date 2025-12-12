@@ -19,6 +19,10 @@ SLOWDOWN_FACTOR=0.5
 # --- Script setup ---
 set -e # Exit immediately if a command exits with a non-zero status.
 
+# Add the project root to the python path to allow imports of 'fms'
+export PYTHONPATH=$(pwd):$PYTHONPATH
+
+
 # Specify which GPUs to use
 export CUDA_VISIBLE_DEVICES=0,1
 
