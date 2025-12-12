@@ -137,12 +137,12 @@ def main():
     schedule = torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=1)
     
     def trace_handler(p):
-        output_path = args.output_file
-        # The trace is produced on each rank, but we only need to save one.
-        if args.rank == 0:
-            print(f"Saving profiler trace to {output_path}...")
-            p.export_chrome_trace(output_path)
-            print("Trace saved.")
+        # Suffix the filename with the rank to save traces for both ranks.
+        base_name, ext = os.path.splitext(args.output_file)
+        output_path = f"{base_name}_rank{args.rank}{ext}"
+        print(f"Rank {args.rank} saving profiler trace to {output_path}...")
+        p.export_chrome_trace(output_path)
+        print(f"Rank {args.rank} trace saved.")
 
     with torch.profiler.profile(
         activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
