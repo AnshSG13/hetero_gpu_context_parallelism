@@ -112,6 +112,48 @@ wait $PID_RANK_1
 echo "Experiment 2 (Uneven Split) finished."
 echo ""
 
+# --- Experiment 3: LUT-based Uneven Split (Refined) ---
+
+echo "=========================================================="
+echo "  Running Experiment 3: LUT-based split with 1 slow GPU"
+echo "=========================================================="
+
+# Launch again, this time with the "lut" split type.
+# The python script will use the performance profile to calculate
+# the refined uneven split.
+
+# Rank 0 (Fast GPU)
+python3 hpml_testing/benchmark_hetero_latency.py \
+    --rank 0 \
+    --world-size $WORLD_SIZE \
+    --seq-len $SEQ_LEN \
+    --emb-dim $EMB_DIM \
+    --n-heads $N_HEADS \
+    --split-type lut \
+    --use-perf-profile hpml_testing/results/matmul_mps_sweep.csv \
+    --rank-mps "100,${SLOWDOWN_PERCENTAGE}" & \
+PID_RANK_0=$!
+
+# Rank 1 (Slow GPU) - Apply MPS slowdown
+CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$SLOWDOWN_PERCENTAGE python3 hpml_testing/benchmark_hetero_latency.py \
+    --rank 1 \
+    --world-size $WORLD_SIZE \
+    --seq-len $SEQ_LEN \
+    --emb-dim $EMB_DIM \
+    --n-heads $N_HEADS \
+    --split-type lut \
+    --use-perf-profile hpml_testing/results/matmul_mps_sweep.csv \
+    --rank-mps "100,${SLOWDOWN_PERCENTAGE}" & \
+PID_RANK_1=$!
+
+# Wait for both processes to complete
+wait $PID_RANK_0
+wait $PID_RANK_1
+
+echo "Experiment 3 (LUT-based Split) finished."
+echo ""
+
+
 # --- Cleanup ---
 echo "Stopping CUDA MPS daemon..."
 echo "quit" | nvidia-cuda-mps-control

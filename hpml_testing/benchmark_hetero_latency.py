@@ -3,6 +3,8 @@ import torch.distributed as dist
 import argparse
 import time
 import math
+import pandas as pd
+import os
 
 from fms.distributed.strategy import RingAttentionStrategy
 from fms.modules.attention import MultiHeadAttention
@@ -84,6 +86,26 @@ def run_benchmark(rank, world_size, n_steps, attn_module, local_input, strategy)
     avg_latency_ms = (end_time - start_time) / n_steps * 1000
     return avg_latency_ms
 
+def load_performance_profile(profile_path, size):
+    """Loads a performance profile from a CSV file."""
+    if not os.path.exists(profile_path):
+        raise FileNotFoundError(f"Performance profile not found: {profile_path}")
+    
+    df = pd.read_csv(profile_path)
+    
+    # Get the closest available size in the dataframe
+    available_sizes = sorted(df['size'].unique())
+    closest_size = min(available_sizes, key=lambda x: abs(x - size))
+    
+    print(f"Using size {closest_size} from performance profile for target size {size}")
+    
+    df_filtered = df[df['size'] == closest_size]
+    
+    if df_filtered.empty:
+        raise ValueError(f"No data found for size {closest_size} in the performance profile.")
+        
+    return df_filtered.set_index('mps_pct')['tflops'].to_dict()
+
 def main():
     parser = argparse.ArgumentParser(description="Heterogeneous Ring Attention Benchmark")
     parser.add_argument("--rank", type=int, required=True, help="Rank of the process")
@@ -92,9 +114,11 @@ def main():
     parser.add_argument("--n-heads", type=int, default=32, help="Number of attention heads")
     parser.add_argument("--emb-dim", type=int, default=4096, help="Embedding dimension")
     parser.add_argument("--n-steps", type=int, default=20, help="Number of benchmark iterations")
-    parser.add_argument("--split-type", type=str, choices=["even", "uneven"], default="even", help="Workload split type")
+    parser.add_argument("--split-type", type=str, choices=["even", "uneven", "lut"], default="even", help="Workload split type")
     parser.add_argument("--slowdown-factor", type=float, default=0.5, help="Proportional slowdown of the weak GPU (e.g., 0.5 for 50%)")
-    
+    parser.add_argument("--use-perf-profile", type=str, default=None, help="Path to the performance profile CSV file.")
+    parser.add_argument("--rank-mps", type=str, default="100,50", help="Comma-separated list of MPS percentages for each rank.")
+
     args = parser.parse_args()
 
     setup_distributed(args.rank, args.world_size)
@@ -107,7 +131,7 @@ def main():
         remainder = args.seq_len % args.world_size
         for i in range(remainder):
             block_lens[i] += 1
-    else: # "uneven"
+    elif args.split_type == "uneven":
         # We assume rank 1 is the slower GPU
         weights = [1.0] * args.world_size
         if args.rank == 1:
@@ -123,6 +147,26 @@ def main():
             block_lens.append(int(round(args.seq_len * (weights[i] / total_weight))))
         
         # Ensure total length is correct
+        diff = sum(block_lens) - args.seq_len
+        block_lens[-1] -= diff
+    elif args.split_type == "lut":
+        if not args.use_perf_profile:
+            raise ValueError("Performance profile must be specified for 'lut' split type.")
+        
+        perf_profile = load_performance_profile(args.use_perf_profile, args.seq_len)
+        
+        rank_mps_list = [int(p) for p in args.rank_mps.split(',')]
+        
+        if len(rank_mps_list) != args.world_size:
+            raise ValueError("Number of MPS percentages must match world size.")
+            
+        weights = [perf_profile[mps] for mps in rank_mps_list]
+        total_weight = sum(weights)
+
+        block_lens = []
+        for i in range(args.world_size):
+            block_lens.append(int(round(args.seq_len * (weights[i] / total_weight))))
+
         diff = sum(block_lens) - args.seq_len
         block_lens[-1] -= diff
 
@@ -162,3 +206,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
