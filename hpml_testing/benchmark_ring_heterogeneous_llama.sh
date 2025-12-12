@@ -5,7 +5,7 @@ trap "trap - SIGTERM && kill -- -$$" SIGINT SIGTERM EXIT
 # Hetero MPS percentages (weak vs strong GPU)
 STRONG_GPU_PERCENTAGE=${STRONG_GPU_PERCENTAGE:-10}
 WEAK_GPU_PERCENTAGE=${WEAK_GPU_PERCENTAGE:-100}
-SEQ_LEN=${SEQ_LEN:-16384}
+SEQ_LEN=${SEQ_LEN:-4096}
 # 512 1024 4096 8192 16384 32768 65536
 
 # LLaMA model config — adjust to your paths
@@ -50,7 +50,7 @@ run_mode () {
         --batch_size $BATCH_SIZE \
         --num_tokens $SEQ_LEN \
         --num_decode_tokens $NUM_DECODE_TOKENS \
-        --disable_flash \
+        # --disable_flash \
         --summary_csv "$SCRIPT_DIR/llama_hetero_${shard_mode}.csv" &
 
     # Rank 1 (strong GPU)
@@ -65,7 +65,7 @@ run_mode () {
         --batch_size $BATCH_SIZE \
         --num_tokens $SEQ_LEN \
         --num_decode_tokens $NUM_DECODE_TOKENS \
-        --disable_flash \
+        # --disable_flash \
         --summary_csv "$SCRIPT_DIR/llama_hetero_${shard_mode}.csv" &
 
     wait
