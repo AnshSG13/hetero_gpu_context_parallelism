@@ -255,19 +255,17 @@ class RingAttentionStrategy(DistributedStrategy):
         v: torch.Tensor,
         valid_len: int,
         iteration: int,
-        enable_timing: bool = False,
-    ) -> Tuple[Any, torch.Tensor, torch.Tensor, int, Optional[torch.cuda.Event]]:
+    ) -> Tuple[Any, torch.Tensor, torch.Tensor, int]:
         """
-        Start async KV ring shift. Returns (requests, recv_k, recv_v, recv_len, comm_start_event).
+        Start async KV ring shift. Returns (requests, recv_k, recv_v, recv_len).
         Communication runs on dedicated stream for overlap with compute.
-        If enable_timing=True, returns CUDA event for start time. End event is recorded in ring_shift_kv_wait.
         """
         # After iteration i, we receive from rank (self.rank - (i+1)) % world_size
         source_rank = (self.rank - (iteration + 1)) % self.world_size
         recv_len = self.block_lens[source_rank]
 
         if self.world_size == 1:
-            return None, k, v, recv_len, None
+            return None, k, v, recv_len
 
         # Ring shift: always send to next, receive from previous
         send_to = (self.rank + 1) % self.world_size
@@ -291,15 +289,8 @@ class RingAttentionStrategy(DistributedStrategy):
         ready_event = torch.cuda.Event()
         ready_event.record()
 
-        # Create start timing event if requested
-        comm_start_event = torch.cuda.Event(enable_timing=True) if enable_timing else None
-
         with torch.cuda.stream(self._comm_stream):
             self._comm_stream.wait_event(ready_event)
-
-            # Record start time on comm stream
-            if comm_start_event:
-                comm_start_event.record()
 
             ops = [
                 P2POp(dist.isend, send_k, send_to),
@@ -309,7 +300,7 @@ class RingAttentionStrategy(DistributedStrategy):
             ]
             reqs = dist.batch_isend_irecv(ops)
 
-        return reqs, recv_k, recv_v, recv_len, comm_start_event
+        return reqs, recv_k, recv_v, recv_len
 
     def ring_shift_kv_wait(
         self,
@@ -317,31 +308,25 @@ class RingAttentionStrategy(DistributedStrategy):
         recv_k: torch.Tensor,
         recv_v: torch.Tensor,
         recv_len: int,
-        enable_timing: bool = False,
-    ) -> Tuple[torch.Tensor, torch.Tensor, int, Optional[torch.cuda.Event], Optional[torch.cuda.Event]]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, int, Optional[torch.cuda.Event]]:
         """
-        Wait for async KV shift to complete. Returns (k, v, valid_len, comm_end_event, sync_event).
+        Wait for async KV shift to complete. Returns (k, v, valid_len, sync_event).
         """
         if reqs is None:
-            return recv_k, recv_v, recv_len, None, None
+            return recv_k, recv_v, recv_len, None
 
         for req in reqs:
             req.wait()
 
-        # Record events on comm stream AFTER transfers complete
-        comm_end_event = None
         sync_event = torch.cuda.Event()
 
         with torch.cuda.stream(self._comm_stream):
-            if enable_timing:
-                comm_end_event = torch.cuda.Event(enable_timing=True)
-                comm_end_event.record()
             sync_event.record()
 
         # No synchronize() needed - recv_len is already known from block_lens
         if recv_len == 0:
-            return recv_k[:, :, :0], recv_v[:, :, :0], 0, comm_end_event, sync_event
-        return recv_k, recv_v, recv_len, comm_end_event, sync_event
+            return recv_k[:, :, :0], recv_v[:, :, :0], 0, sync_event
+        return recv_k, recv_v, recv_len, sync_event
  
     @property
     def local_q_len(self) -> int:

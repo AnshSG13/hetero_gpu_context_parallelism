@@ -25,8 +25,6 @@ _printed_stream_info = False
 
 # Aggregate timing across all layers
 _total_compute_ms = 0.0
-_total_comm_ms = 0.0
-_total_bytes = 0
 
 
 def ring_forward(
@@ -318,7 +316,7 @@ def _compute_attention_ring_pass_kv(
     Uses Triton/stats-based computation for ALL blocks to ensure correct
     online softmax merging and prevent deadlocks (all ranks execute same code path).
     """
-    global _layer_call_counter, _printed_stream_info, _total_compute_ms, _total_comm_ms, _total_bytes
+    global _layer_call_counter, _printed_stream_info, _total_compute_ms
 
     batch_size, nheads, _, emb_v = q.shape[0], q.shape[1], q.shape[2], v.shape[-1]
 
@@ -337,8 +335,6 @@ def _compute_attention_ring_pass_kv(
 
     # Timing accumulators
     PROFILE = True
-    total_bytes_transferred = 0
-    comm_events = []  # List of (start_event, end_event) tuples
     compute_events = []  # List of (start_event, end_event) tuples
     diag_compute_events = []  # (start, end) for diagonal block compute
     offdiag_compute_events = []  # (start, end) for off-diagonal block compute
@@ -359,7 +355,6 @@ def _compute_attention_ring_pass_kv(
     # Main Ring Loop
     for i in range(strategy.world_size):
         # 1. Start async comm for next iteration (overlaps with compute)
-        comm_start_event = None
         reqs, recv_k, recv_v, recv_len = None, None, None, None
 
         # Track what is being computed this iteration
@@ -367,8 +362,8 @@ def _compute_attention_ring_pass_kv(
         did_offdiag_compute = False
 
         if i < strategy.world_size - 1 and not _DEBUG_DISABLE_COMM:
-            reqs, recv_k, recv_v, recv_len, comm_start_event = strategy.ring_shift_kv_async(
-                cur_k, cur_v, cur_len, iteration=i, enable_timing=PROFILE
+            reqs, recv_k, recv_v, recv_len = strategy.ring_shift_kv_async(
+                cur_k, cur_v, cur_len, iteration=i
             )
 
         # Record compute start event on default stream
@@ -433,37 +428,25 @@ def _compute_attention_ring_pass_kv(
 
         # 4. Wait for comm and get new K,V for next iteration
         if i < strategy.world_size - 1 and not _DEBUG_DISABLE_COMM:
-            cur_k, cur_v, cur_len, comm_end_event, sync_event = strategy.ring_shift_kv_wait(
-                reqs, recv_k, recv_v, recv_len, enable_timing=PROFILE
+            cur_k, cur_v, cur_len, sync_event = strategy.ring_shift_kv_wait(
+                reqs, recv_k, recv_v, recv_len
             )
-
-            if PROFILE:
-                total_bytes_transferred += cur_k.numel() * cur_k.element_size()
-                total_bytes_transferred += cur_v.numel() * cur_v.element_size()
-                if comm_start_event and comm_end_event:
-                    comm_events.append((comm_start_event, comm_end_event))
 
             # Default stream waits for comm before using received tensors
             if sync_event is not None:
                 torch.cuda.current_stream().wait_event(sync_event)
-            # Slice to valid length (
+            # Slice to valid length
             cur_k = cur_k[:, :, :cur_len].contiguous()
             cur_v = cur_v[:, :, :cur_len].contiguous()
-            cur_k, cur_v = cur_k.to(accum_dtype), cur_v.to(accum_dtype)
-
             cur_k, cur_v = cur_k.to(accum_dtype), cur_v.to(accum_dtype)
 
     # Synchronize and compute timing from CUDA events
     torch.cuda.synchronize()
 
     # Calculate actual times from CUDA events
-    total_comm_time_ms = 0.0
     total_compute_time_ms = 0.0
     total_offdiag_compute_ms = 0.0
     total_diag_compute_ms = 0.0
-
-    for start_evt, end_evt in comm_events:
-        total_comm_time_ms += start_evt.elapsed_time(end_evt)
 
     for start_evt, end_evt in compute_events:
         total_compute_time_ms += start_evt.elapsed_time(end_evt)
@@ -475,23 +458,14 @@ def _compute_attention_ring_pass_kv(
         total_offdiag_compute_ms += start_evt.elapsed_time(end_evt)
 
     # Accumulate timing for summary
-    global _total_compute_ms, _total_comm_ms, _total_bytes
+    global _total_compute_ms
     _total_compute_ms += total_compute_time_ms
-    _total_comm_ms += total_comm_time_ms
-    _total_bytes += total_bytes_transferred
 
     # Print timing (only rank 1, first layer only)
     if PROFILE and strategy.rank == 1 and should_print:
-        comm_bandwidth_gbps = (total_bytes_transferred / 1e9) / (total_comm_time_ms / 1000) if total_comm_time_ms > 0 else 0
-
         print(f"\n[Ring Attention layer={current_layer}] tokens={num_valid_tokens}, world_size={strategy.world_size}")
-        print(f"  comm: {total_comm_time_ms:6.2f}ms | compute: {total_compute_time_ms:6.2f}ms")
+        print(f"  compute: {total_compute_time_ms:6.2f}ms")
         print(f"  diag: {total_diag_compute_ms:6.2f} ms | offdiag: {total_offdiag_compute_ms:6.4f} ms")
-        print(f"  data: {total_bytes_transferred/1e6:.2f} MB | bandwidth: {comm_bandwidth_gbps:.2f} GB/s")
-        if total_comm_time_ms < total_compute_time_ms:
-            print(f"  comm hidden behind compute")
-        else:
-            print(f"  comm is bottleneck")
 
     if num_valid_tokens == 0:
         return torch.empty((batch_size, nheads, 0, emb_v), device=q.device, dtype=q.dtype)
@@ -528,32 +502,22 @@ def _attn_scores(
 
 def reset_layer_counter():
     global _layer_call_counter, _printed_stream_info
-    global _total_compute_ms, _total_comm_ms, _total_bytes
+    global _total_compute_ms
     _layer_call_counter = 0
     _printed_stream_info = False
     _total_compute_ms = 0.0
-    _total_comm_ms = 0.0
-    _total_bytes = 0
 
 
 def print_timing_summary(rank: int = 0):
     if rank != 0:
         return
 
-    if _total_compute_ms == 0 and _total_comm_ms == 0:
+    if _total_compute_ms == 0:
         return
 
     num_layers = _layer_call_counter
-    comm_bandwidth_gbps = (_total_bytes / 1e9) / (_total_comm_ms / 1000) if _total_comm_ms > 0 else 0
-
     print(f"\n[Ring Attention Summary] {num_layers} layers")
-    print(f"  comm (total):    {_total_comm_ms:8.2f}ms")
     print(f"  compute (total): {_total_compute_ms:8.2f}ms")
-    print(f"  data: {_total_bytes/1e6:.2f} MB | bandwidth: {comm_bandwidth_gbps:.2f} GB/s")
-    if _total_comm_ms < _total_compute_ms:
-        print(f"  comm hidden behind compute")
-    else:
-        print(f"  comm is bottleneck")
 
 
 def _online_softmax_merge_stats(
