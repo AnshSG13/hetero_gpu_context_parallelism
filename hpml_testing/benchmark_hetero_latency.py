@@ -66,7 +66,7 @@ def run_benchmark(rank, world_size, n_steps, attn_module, local_input, strategy)
 
     torch.cuda.synchronize()
     
-    # Timed runs
+    # start profiling
     start_time = time.time()
     for _ in range(n_steps):
         _ring_attention_pass_kv(
@@ -77,8 +77,6 @@ def run_benchmark(rank, world_size, n_steps, attn_module, local_input, strategy)
             causal=True
         )
     
-    # We need to sync/barrier here to make sure all ranks have finished
-    # their work before stopping the timer.
     dist.barrier()
     torch.cuda.synchronize()
     end_time = time.time()
@@ -86,10 +84,11 @@ def run_benchmark(rank, world_size, n_steps, attn_module, local_input, strategy)
     avg_latency_ms = (end_time - start_time) / n_steps * 1000
     return avg_latency_ms
 
-def load_performance_profile(profile_path):
+def load_performance_profile(profile_path, size):
     """
     Loads a performance profile from a CSV file.
     Detects whether the profile is throughput (tflops) or latency (latency_ms) based.
+    If tflops-based, it finds the closest matrix size to the given size.
     """
     if not os.path.exists(profile_path):
         raise FileNotFoundError(f"Performance profile not found: {profile_path}")
@@ -100,15 +99,17 @@ def load_performance_profile(profile_path):
         print(f"Loaded latency-based performance profile from {profile_path}")
         return df.set_index('mps_pct')['latency_ms'].to_dict(), 'latency'
     elif 'tflops' in df.columns:
-        # The tflops profile depends on matmul size, so we need to find the closest one.
-        # This part of logic is kept for backward compatibility.
-        # For this to work, we need a target size, which we can approximate from SEQ_LEN.
-        # However, the new flow standardizes on latency-based profiles.
-        # We will assume new profiles are latency based.
         print(f"Loaded throughput-based (tflops) performance profile from {profile_path}")
-        # Simplified: we assume the LUT is pre-filtered or appropriate.
-        # A more robust implementation would require passing seq_len here.
-        return df.set_index('mps_pct')['tflops'].to_dict(), 'tflops'
+        available_sizes = sorted(df['size'].unique())
+        closest_size = min(available_sizes, key=lambda x: abs(x - size))
+        
+        print(f"Using size {closest_size} from tflops profile for target sequence length {size}")
+        
+        df_filtered = df[df['size'] == closest_size]
+        if df_filtered.empty:
+            raise ValueError(f"No data found for size {closest_size} in the tflops profile.")
+            
+        return df_filtered.set_index('mps_pct')['tflops'].to_dict(), 'tflops'
     else:
         raise ValueError("Performance profile must contain either 'latency_ms' or 'tflops' column.")
 
@@ -182,7 +183,7 @@ def main():
         if not args.use_perf_profile:
             raise ValueError("Performance profile must be specified for 'lut' split type.")
         
-        perf_profile, metric_type = load_performance_profile(args.use_perf_profile)
+        perf_profile, metric_type = load_performance_profile(args.use_perf_profile, args.seq_len)
         
         rank_mps_list = [float(p) for p in args.rank_mps.split(',')]
         
