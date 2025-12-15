@@ -6,6 +6,7 @@ import math
 import time
 import argparse
 import wandb
+from plot_sweep_results import generate_and_log_plots
 
 # --- Configuration ---
 SEQLEN_SWEEP = [4096, 8192, 16384, 32768, 65536, 131072]
@@ -262,11 +263,16 @@ def main():
     except Exception as e:
         print(f"An error occurred during the sweep: {e}")
     finally:
-        # --- WANDB Integration: Finish Run ---
-        print("\nSweep finished. Saving results and closing wandb run...")
-        df_results = pd.DataFrame(all_sweep_results)
-        df_results.to_csv(OUTPUT_CSV_PATH, index=False)
-        print(f"Results saved to {OUTPUT_CSV_PATH}")
+        # --- WANDB Integration: Generate and Log Plot, then Finish Run ---
+        print("\nSweep finished. Generating plot, saving results, and closing wandb run...")
+        if all_sweep_results: # Only plot if there is data
+            df_results = pd.DataFrame(all_sweep_results)
+            df_results.to_csv(OUTPUT_CSV_PATH, index=False)
+            print(f"Results saved to {OUTPUT_CSV_PATH}")
+            generate_and_log_plots(df_results) # New call to generate and log plot
+        else:
+            print("No results were generated, skipping CSV save and plotting.")
+
         wandb.finish()
 
 if __name__ == "__main__":

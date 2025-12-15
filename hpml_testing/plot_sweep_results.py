@@ -3,25 +3,16 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import os
 import sys
+import wandb
 
 # --- Configuration ---
 DEFAULT_INPUT_CSV = "hpml_testing/results/sweep_results.csv"
-OUTPUT_DIR = "hpml_testing/plots"
 
-def create_plots(csv_path):
+def generate_and_log_plots(df: pd.DataFrame):
     """
-    Reads the sweep results from a CSV file and generates a grouped bar chart
-    to show the slowdown of different strategies relative to the ideal homogeneous baseline.
+    Takes a DataFrame of sweep results, generates a slowdown comparison plot,
+    and logs it directly to Weights & Biases.
     """
-    if not os.path.exists(csv_path):
-        print(f"Error: Input CSV file not found at {csv_path}")
-        return
-
-    # Create output directory if it doesn't exist
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-    df = pd.read_csv(csv_path)
-
     # --- Data Transformation for Slowdown Calculation ---
     # Pivot the table to get latency for each split_type in columns
     pivot_df = df.pivot_table(
@@ -49,7 +40,7 @@ def create_plots(csv_path):
 
 
     # --- Grouped Bar Charts for Slowdown ---
-    print("Generating slowdown comparison bar charts...")
+    print("Generating and logging slowdown comparison bar charts...")
     g_bar = sns.catplot(
         data=slowdown_df,
         x="slowdown_pct",
@@ -76,9 +67,10 @@ def create_plots(csv_path):
     # Handle legend
     g_bar.add_legend(title="Strategy")
     
-    bar_chart_path = os.path.join(OUTPUT_DIR, "sweep_slowdown_comparison.png")
-    g_bar.savefig(bar_chart_path)
-    print(f"Slowdown comparison bar charts saved to {bar_chart_path}")
+    # --- WANDB Integration: Log the plot ---
+    wandb.log({"Slowdown Comparison Plot": g_bar})
+    plt.close(g_bar.fig) # Close the figure to free up memory
+    print("Plot logged to wandb.")
 
 
 if __name__ == "__main__":
@@ -86,5 +78,18 @@ if __name__ == "__main__":
         input_csv = sys.argv[1]
     else:
         input_csv = DEFAULT_INPUT_CSV
+
+    if not os.path.exists(input_csv):
+        print(f"Error: Input CSV file not found at {input_csv}")
+        sys.exit(1)
+        
+    print("Running plot script as a standalone test. Initializing a dummy wandb run.")
+    # This allows running the script standalone for testing/debugging plots
+    # Note: This will create a new, separate run in wandb.
+    wandb.init(project="heterogeneous-ring-attention", name="standalone_plot_test")
     
-    create_plots(input_csv)
+    df = pd.read_csv(input_csv)
+    generate_and_log_plots(df)
+    
+    wandb.finish()
+    print("Standalone test finished.")
