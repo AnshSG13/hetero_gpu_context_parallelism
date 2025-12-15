@@ -3,13 +3,18 @@ import math
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Tuple
+from typing_extensions import Unpack
 
 import torch
 import torch.nn as nn
 
 from fms import models
 from fms.distributed.strategy import DistributedStrategy, NoOpStrategy
-from fms.modules.attention import MultiHeadAttention
+from fms.modules.attention import (
+    AttentionKwargs,
+    MultiHeadAttention,
+    get_attention_type,
+)
 from fms.modules.feedforward import GatedLinearUnit
 from fms.modules.layernorm import LayerNormParameterized
 from fms.modules.linear import get_linear_type
@@ -17,6 +22,7 @@ from fms.modules.positions import RotaryEmbedding
 from fms.utils import serialization
 from fms.utils.activation import str_to_activation
 from fms.utils.config import ModelConfig
+from fms.utils.headless import gather_outputs
 
 
 logger = logging.getLogger(__name__)
@@ -28,6 +34,7 @@ class GraniteConfig(ModelConfig):
     emb_dim: int = 4096
     norm_eps: float = 1e-5
     nheads: int = 32
+    head_dim: int = 128  # getattr(config, "head_dim", emb_dim // nheads)
     kvheads: int = 0
     nlayers: int = 32
     pad_id: int = -1
@@ -53,8 +60,8 @@ class GraniteBlock(nn.Module):
     def __init__(self, config: GraniteConfig, rotary_emb: RotaryEmbedding):
         super(GraniteBlock, self).__init__()
         self.config = config
-        emb_kq = self.config.emb_dim // self.config.nheads
-        emb_v = self.config.emb_dim // self.config.nheads
+        emb_kq = self.config.head_dim
+        emb_v = self.config.head_dim
 
         self.ln = LayerNormParameterized(
             self.config.emb_dim,
@@ -110,12 +117,10 @@ class GraniteBlock(nn.Module):
         self,
         x,
         *,
-        mask=None,
         position_ids=None,
         past_key_value_state=None,
         use_cache=False,
-        is_causal_mask=False,
-        attn_algorithm=None,
+        **attn_kwargs: Unpack[AttentionKwargs],
     ):
         # if the cache is not empty, we need to get the kv cache for self and cross attention
         self_attn_past_key_value = past_key_value_state
@@ -125,13 +130,10 @@ class GraniteBlock(nn.Module):
         x = self.ln(x)
         x = self.attn(
             q=x,
-            mask=mask,
             position_ids=position_ids,
-            attn_algorithm=attn_algorithm,
             past_key_value_state=self_attn_past_key_value,
             use_cache=use_cache,
-            is_self=True,
-            is_causal_mask=is_causal_mask,
+            **attn_kwargs,
         )
         cache = None
         if use_cache:
@@ -159,11 +161,16 @@ class GraniteBlock(nn.Module):
 class GraniteHeadless(nn.Module):
     def __init__(
         self,
-        config: GraniteConfig,
+        config: Optional[GraniteConfig] = None,
         distributed_strategy: DistributedStrategy = NoOpStrategy,
+        **kwargs,
     ):
         super(GraniteHeadless, self).__init__()
-        self.config = config
+        if config is not None:
+            self.config = config
+        else:
+            self.config = GraniteConfig()
+        self.config = self.config.updated(**kwargs)
         self.distributed_strategy = distributed_strategy
 
         self.width = self.config.emb_dim
@@ -179,7 +186,7 @@ class GraniteHeadless(nn.Module):
         rope_scaling = {"rope_type": "ntk" if self.config.ntk_scaling else "regular"}
 
         self.rot_emb = RotaryEmbedding(
-            dim=self.config.emb_dim // self.config.nheads,
+            dim=self.config.head_dim,
             scaling=rope_scaling,
             max_seq_len=self.config.max_expected_seq_len,
             ratio=self.config.rope_theta,
@@ -267,38 +274,20 @@ class GraniteHeadless(nn.Module):
     def forward(
         self,
         x_in,
-        mask=None,
         position_ids=None,
         past_key_value_states=None,
         use_cache=False,
-        attn_algorithm=None,
+        **attn_kwargs: Unpack[AttentionKwargs],
     ):
         # Embed the given vocabulary indices using the given attention mask, with pre-/post-norm and dropout as specified
-        # x_in: batch_size x seq_len
+        # x_in: batch_size x seq_len x emb_dim if input is already embedded, otherwise batch_size x seq_len
         # mask: batch_size x seq_len x seq_len
         # bias: nheads x seq_len x seq_len
         if past_key_value_states is None or len(past_key_value_states) == 0:
             past_key_value_states = [None for _ in range(len(self.layers))]
 
-        qlen = x_in.size(1)
-        klen = x_in.size(1)
-
-        # if we are using the cache, the key length needs to be extended with the past keys length
-        if use_cache and past_key_value_states[0] is not None:
-            klen += past_key_value_states[0][0].size(-2)
-
-        # if mask is none, we need to specify causal mask
-        if mask is None:
-            # we are caching and can assume all 1s in the mask
-            if use_cache and klen != 1 and qlen == 1:
-                # b x h x qlen x kvlen
-                is_causal_mask = False
-            else:
-                is_causal_mask = True
-        else:
-            is_causal_mask = False
-
-        x_in = self.embedding(x_in)
+        if x_in.dim() == 2:  # input is not already embedded
+            x_in = self.embedding(x_in)
         x_in = x_in * self.config.embedding_multiplier
 
         # this is the output cache for all the decoder layers
@@ -307,12 +296,10 @@ class GraniteHeadless(nn.Module):
         for i, layer in enumerate(self.layers):
             output = layer(
                 x=x_in,
-                mask=mask,
                 position_ids=position_ids,
                 past_key_value_state=past_key_value_states[i],
                 use_cache=use_cache,
-                is_causal_mask=is_causal_mask,
-                attn_algorithm=attn_algorithm,
+                **attn_kwargs,
             )
 
             if use_cache:
@@ -378,19 +365,28 @@ class Granite(nn.Module):
     def forward(
         self,
         x: torch.LongTensor,
-        mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_value_states: Optional[Tuple[torch.FloatTensor,]] = None,
         use_cache: bool = False,
-        only_last_token: bool = False,
-        attn_algorithm: Optional[str] = None,
+        last_n_tokens: int = 0,
+        **attn_kwargs: Unpack[AttentionKwargs],
     ):
-        output, cache = self.base_model(
-            x, mask, position_ids, past_key_value_states, use_cache, attn_algorithm
+        get_attention_type(**attn_kwargs)["validate_attn_kwargs"](
+            input_ids=x,
+            position_ids=position_ids,
+            past_key_value_states=past_key_value_states,
+            **attn_kwargs,
         )
 
-        if only_last_token:
-            output = output[:, -1, :]
+        output, cache = self.base_model(
+            x,
+            position_ids,
+            past_key_value_states,
+            use_cache,
+            **attn_kwargs,
+        )
+
+        output = gather_outputs(output, last_n_tokens, **attn_kwargs)
         preds = self.head(output)
         preds = preds / self.config.logits_scaling
 
@@ -419,6 +415,25 @@ _8b_config = GraniteConfig(
     attention_multiplier=0.0078125,
 )
 
+_3_1_2b_config = GraniteConfig(
+    src_vocab_size=49155,
+    emb_dim=2048,
+    norm_eps=1e-5,
+    nheads=32,
+    kvheads=8,
+    nlayers=40,
+    hidden_grow_factor=8192 / 2048,
+    max_expected_seq_len=131072,
+    rope_theta=5000000.0,
+    pad_id=0,
+    p_dropout=0.0,
+    tie_heads=True,
+    embedding_multiplier=12.0,
+    logits_scaling=8.0,
+    residual_multiplier=0.22,
+    attention_multiplier=0.015625,
+)
+
 _architecture_name = "granite"
 
 
@@ -430,6 +445,9 @@ def _granite_factory_factory(config):
 
 
 models.register_model(_architecture_name, "8b", _granite_factory_factory(_8b_config))
+models.register_model(
+    _architecture_name, "3_1_2b", _granite_factory_factory(_3_1_2b_config)
+)
 
 
 def _weight_fusion(
@@ -481,12 +499,21 @@ serialization.register_adapter_step(
 )
 
 
+serialization.register_adapter_step(
+    _architecture_name,
+    "weight_expansion_for_mismatched_head_dim",
+    serialization._weight_expansion_for_mismatched_head_dim,  # type: ignore[arg-type]
+)
+
+
 def _get_rope_params(linear_type: str) -> list[str]:
     if "gptq" in linear_type:
         return ["qweight", "scales", "qzeros", "bias"]
-    if "int8" in linear_type:
+    elif "int8" in linear_type:
         # quantize_weight is fms-model-optimizer identifier of weight clip values
         return ["weight", "bias", "quantize_weight"]
+    elif "fp8" in linear_type:
+        return ["weight", "weight_scale", "input_scale", "bias"]
     else:  # torch.nn.Linear
         return ["weight", "bias"]
 
@@ -498,22 +525,25 @@ def _hf_to_fms_rope(
 
     if model_config:
         head_size = model_config.emb_dim // model_config.nheads
-        linear_type_str = "torch_linear"
-        if model_config.linear_config:
-            linear_type_str = get_linear_type(
-                model_config.linear_config,
-                module_name=None,  # if callable, linear_type should return default str
-            )
     else:
         logger.warning("Missing model_config, assuming defaults for head_size")
         head_size = 128  # Good default for most models
-        linear_type_str = "torch_linear"
 
-    rope_params = _get_rope_params(linear_type_str)
-    trans_required_pattern = re.compile(
-        f"base_model.layers.[0-9]+.attn.in_proj.(query|key).({'|'.join(rope_params)})"
-    )
     for name, param in input_sd.items():
+        # Some checkpoints have weights in different precisions, which can have
+        # auxiliary tensors (see _get_rope_params e.g. gptq, fp8).
+        # Thus, we need to get rope_params per parameter.
+        linear_type_str = "torch_linear"
+        if model_config and model_config.linear_config:
+            linear_type_str = get_linear_type(
+                model_config.linear_config,
+                module_name=name,
+            )
+        rope_params = _get_rope_params(linear_type_str)
+        trans_required_pattern = re.compile(
+            f"base_model.layers.[0-9]+.attn.in_proj.(query|key).({'|'.join(rope_params)})$"
+        )
+
         # hf -> fms requires a transpose operation for the query and key
         # weight and bias parameters for Llama models
         # This transpose is due to the different implementation of RoPE in
@@ -564,7 +594,7 @@ def _hf_gptq_granite_check(
         if model_config.linear_config:
             linear_type = model_config.linear_config["linear_type"]
 
-    if "gptq" in linear_type and has_fused_weights:
+    if not callable(linear_type) and "gptq" in linear_type and has_fused_weights:
         raise ValueError(
             "GPTQ HF granite checkpoints cannot be loaded into a model with fused weights"
         )
@@ -583,5 +613,10 @@ serialization.register_adapter_step(
 serialization.register_adapter(
     _architecture_name,
     "hf",
-    ["hf_to_fms_names", "hf_to_fms_rope", "hf_gptq_fusion_check", "weight_fusion"],
+    [
+        "hf_to_fms_names",
+        "hf_to_fms_rope",
+        "hf_gptq_fusion_check",
+        "weight_fusion",
+    ],
 )

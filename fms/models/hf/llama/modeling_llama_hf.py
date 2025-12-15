@@ -1,5 +1,7 @@
 from typing import Optional, Tuple
+from typing_extensions import Unpack
 
+from fms.modules.attention import SDPAAttentionKwargs
 import torch
 import torch.nn as nn
 from transformers import PretrainedConfig
@@ -8,7 +10,7 @@ from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttenti
 from fms.models.hf.llama.configuration_llama_hf import HFAdaptedLLaMAConfig
 from fms.models.hf.lm_head_mixins import LMHeadModelLMHeadMixin
 from fms.models.hf.modeling_hf_adapter import HFDecoder, HFDecoderModelArchitecture
-from fms.models.llama import LLaMA
+from fms.models.llama import LLaMA, LLaMAHeadless
 
 
 class HFAdaptedLLaMADecoder(HFDecoder):
@@ -17,9 +19,6 @@ class HFAdaptedLLaMADecoder(HFDecoder):
     def __init__(self, model: LLaMA, config: PretrainedConfig):
         super().__init__(model, config, attention_mask_dim=3)
 
-    def set_input_embeddings(self, value: nn.Module):
-        self.model.shared.emb = value
-
     def _adapt(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -27,19 +26,18 @@ class HFAdaptedLLaMADecoder(HFDecoder):
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[Tuple[torch.Tensor]] = None,
         use_cache: Optional[bool] = None,
-        attn_algorithm: Optional[
-            str
-        ] = None,  # this can be passed in from top most forward
         *args,
-        **kwargs,
+        **kwargs: Unpack[SDPAAttentionKwargs],
     ) -> BaseModelOutputWithPastAndCrossAttentions:
-        output = self.model._helper(
+        if kwargs.get("mask", None) is None:
+            kwargs["mask"] = attention_mask
+
+        output = self.model(
             x_in=input_ids,
-            mask=attention_mask,
             position_ids=position_ids,
             past_key_value_states=past_key_values,
             use_cache=use_cache,
-            attn_algorithm=attn_algorithm,
+            **kwargs,
         )
 
         present_key_values = None
@@ -51,7 +49,7 @@ class HFAdaptedLLaMADecoder(HFDecoder):
 
 
 class HFAdaptedLLaMAHeadless(HFDecoderModelArchitecture):
-    """This is the Adapter for the base granite architecture"""
+    """This is the Adapter for the base llama architecture"""
 
     # attributes required by HF
     config_class = HFAdaptedLLaMAConfig
@@ -68,9 +66,9 @@ class HFAdaptedLLaMAHeadless(HFDecoderModelArchitecture):
         # in the case we have not yet received the encoder/decoder/embedding, initialize it here
         if decoder is None or embedding is None:
             params = config.to_dict()
-            model = LLaMA(pad_id=params.pop("pad_token_id"), **params)
+            model = LLaMAHeadless(pad_id=params.pop("pad_token_id"), **params)
             decoder = model if decoder is None else decoder
-            embedding = model.shared.emb if embedding is None else embedding
+            embedding = model.embedding if embedding is None else embedding
 
         # these are now huggingface compatible
         decoder = HFAdaptedLLaMADecoder(decoder, config)
@@ -120,14 +118,10 @@ class HFAdaptedLLaMAForCausalLM(LMHeadModelLMHeadMixin, HFAdaptedLLaMAHeadless):
     def _hf_model_from_fms(
         cls, model: LLaMA, config: HFAdaptedLLaMAConfig
     ) -> "HFAdaptedLLaMAForCausalLM":
-        return cls(
+        out = cls(
             config=config,
-            decoder=model,
-            embedding=model.shared.emb,
-            lm_head=model.shared.head,
+            decoder=model.base_model,
+            embedding=model.base_model.embedding,
+            lm_head=model.head,
         )
-
-    # overriding this to enable tensor-parallel since it requires a WordEmbedding forward
-    # in the future WordEmbedding should be split up
-    def _lm_head(self, input_ids, *args, **kwargs):
-        return self.decoder.model.shared(input_ids, reverse=True)
+        return out
