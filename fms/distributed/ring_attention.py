@@ -383,44 +383,43 @@ def _compute_attention_ring_pass_kv(
         is_diagonal = (i == 0)  # Diagonal block: Q and K are from same rank's tokens
 
         # 3. Compute attention on current block using Triton
-        with torch.profiler.record_function("compute_block"):
-            if num_valid_tokens > 0 and cur_len > 0:
-                k_start = block_offset
-                q_end = q_start + num_valid_tokens - 1
+        if num_valid_tokens > 0 and cur_len > 0:
+            k_start = block_offset
+            q_end = q_start + num_valid_tokens - 1
 
-                # Skip block ONLY if fully masked by causality
-                is_fully_masked = causal and (k_start > q_end)
+            # Skip block ONLY if fully masked by causality
+            is_fully_masked = causal and (k_start > q_end)
 
-                if not is_fully_masked:
-                    key_indices = torch.arange(block_offset, block_offset + cur_len, device=q.device)
+            if not is_fully_masked:
+                key_indices = torch.arange(block_offset, block_offset + cur_len, device=q.device)
 
-                    # Correctly slice mask for this specific block [Local Q, Remote K]
-                    mask_slice = None
-                    if mask is not None:
-                        m_q_start = q_start
-                        m_q_end = q_start + num_valid_tokens
-                        m_k_start = block_offset
-                        m_k_end = block_offset + cur_len
-                        if mask.ndim >= 2:
-                            mask_slice = mask[..., m_q_start:m_q_end, m_k_start:m_k_end]
+                # Correctly slice mask for this specific block [Local Q, Remote K]
+                mask_slice = None
+                if mask is not None:
+                    m_q_start = q_start
+                    m_q_end = q_start + num_valid_tokens
+                    m_k_start = block_offset
+                    m_k_end = block_offset + cur_len
+                    if mask.ndim >= 2:
+                        mask_slice = mask[..., m_q_start:m_q_end, m_k_start:m_k_end]
 
-                    # This ensures consistent timing and math across all ranks
-                    z_block, l_block, m_block = _block_softmax_stats(
-                        q_cast, cur_k, cur_v,
-                        query_indices, key_indices,
-                        scale, mask_slice, causal
-                    )
+                # This ensures consistent timing and math across all ranks
+                z_block, l_block, m_block = _block_softmax_stats(
+                    q_cast, cur_k, cur_v,
+                    query_indices, key_indices,
+                    scale, mask_slice, causal
+                )
 
-                    # Merge this block's stats into the global accumulator
-                    numerator, denominator, max_score = _online_softmax_merge_stats(
-                        z_block, l_block, m_block,
-                        numerator, denominator, max_score
-                    )
+                # Merge this block's stats into the global accumulator
+                numerator, denominator, max_score = _online_softmax_merge_stats(
+                    z_block, l_block, m_block,
+                    numerator, denominator, max_score
+                )
 
-                    if is_diagonal:
-                        did_diag_compute = True
-                    else:
-                        did_offdiag_compute = True
+                if is_diagonal:
+                    did_diag_compute = True
+                else:
+                    did_offdiag_compute = True
 
         # Record compute end event on DEFAULT stream
         if compute_end:
@@ -434,20 +433,19 @@ def _compute_attention_ring_pass_kv(
 
         # 4. Wait for comm and get new K,V for next iteration
         if i < strategy.world_size - 1 and not _DEBUG_DISABLE_COMM:
-            with torch.profiler.record_function("comm_wait"):
-                cur_k, cur_v, cur_len, comm_end_event, sync_event = strategy.ring_shift_kv_wait(
-                    reqs, recv_k, recv_v, recv_len, enable_timing=PROFILE
-                )
+            cur_k, cur_v, cur_len, comm_end_event, sync_event = strategy.ring_shift_kv_wait(
+                reqs, recv_k, recv_v, recv_len, enable_timing=PROFILE
+            )
 
-                if PROFILE:
-                    total_bytes_transferred += cur_k.numel() * cur_k.element_size()
-                    total_bytes_transferred += cur_v.numel() * cur_v.element_size()
-                    if comm_start_event and comm_end_event:
-                        comm_events.append((comm_start_event, comm_end_event))
+            if PROFILE:
+                total_bytes_transferred += cur_k.numel() * cur_k.element_size()
+                total_bytes_transferred += cur_v.numel() * cur_v.element_size()
+                if comm_start_event and comm_end_event:
+                    comm_events.append((comm_start_event, comm_end_event))
 
-                # Default stream waits for comm before using received tensors
-                if sync_event is not None:
-                    torch.cuda.current_stream().wait_event(sync_event)
+            # Default stream waits for comm before using received tensors
+            if sync_event is not None:
+                torch.cuda.current_stream().wait_event(sync_event)
             
             # Slice to valid length (
             cur_k = cur_k[:, :, :cur_len].contiguous()
