@@ -68,7 +68,7 @@ def generate_and_log_plots(df: pd.DataFrame):
     g_bar.add_legend(title="Strategy")
     
     # --- WANDB Integration: Log the plot ---
-    wandb.log({"Slowdown Comparison Plot": g_bar})
+    wandb.log({"Slowdown Comparison Plot": wandb.Image(g_bar)})
     plt.close(g_bar.fig) # Close the figure to free up memory
     print("Plot logged to wandb.")
 
