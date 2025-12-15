@@ -3,21 +3,18 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import os
 import sys
+import wandb
 
 # --- Configuration ---
 DEFAULT_INPUT_CSV = "hpml_testing/results/sweep_results.csv"
 OUTPUT_DIR = "hpml_testing/plots"
 
-def create_plots(csv_path):
+def generate_and_log_plots(df):
     """
-    Reads sweep results and generates a slowdown comparison plot, saving it locally.
+    Takes a DataFrame of sweep results, generates plots, saves them locally,
+    and logs them to a wandb run.
     """
-    if not os.path.exists(csv_path):
-        print(f"Error: Input CSV file not found at {csv_path}")
-        return
-
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    df = pd.read_csv(csv_path)
 
     # --- Data Transformation for Slowdown Calculation ---
     pivot_df = df.pivot_table(
@@ -77,6 +74,26 @@ def create_plots(csv_path):
     g_bar.savefig(bar_chart_path)
     plt.close(g_bar.fig)
     print(f"Plot saved locally to {bar_chart_path}")
+
+    # --- W&B Logging ---
+    if wandb.run:
+        print("Logging plots to wandb...")
+        wandb.log({"slowdown_comparison_plot": wandb.Image(bar_chart_path)})
+        print("Done logging.")
+    else:
+        print("No active wandb run, skipping plot logging.")
+
+
+def create_plots(csv_path):
+    """
+    Reads sweep results from a CSV and generates plots.
+    """
+    if not os.path.exists(csv_path):
+        print(f"Error: Input CSV file not found at {csv_path}")
+        return
+    
+    df = pd.read_csv(csv_path)
+    generate_and_log_plots(df)
 
 
 if __name__ == "__main__":
