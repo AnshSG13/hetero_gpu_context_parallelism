@@ -151,7 +151,7 @@ def main():
     parser.add_argument("--seq-len", type=int, default=4096, help="Total sequence length")
     parser.add_argument("--n-heads", type=int, default=32, help="Number of attention heads")
     parser.add_argument("--emb-dim", type=int, default=4096, help="Embedding dimension")
-    parser.add_argument("--n-steps", type=int, default=20, help="Number of benchmark iterations")
+    parser.add_argument("--n-steps", type=int, default=5, help="Number of benchmark iterations")
     parser.add_argument("--split-type", type=str, choices=["even", "uneven", "lut", "formula"], default="even", help="Workload split type")
     parser.add_argument("--slowdown-factor", type=float, default=0.5, help="Proportional slowdown of the weak GPU (e.g., 0.5 for 50%)")
     parser.add_argument("--use-perf-profile", type=str, default=None, help="Path to the performance profile CSV file.")

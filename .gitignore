@@ -16,3 +16,4 @@ hpml_testing/benchmark_results/
 logs/.DS_Store
 logs/*
 .DS_Store
+wandb/

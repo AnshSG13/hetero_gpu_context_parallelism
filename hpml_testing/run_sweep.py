@@ -112,7 +112,6 @@ def main():
                     "split_type": "even", 
                 })
                 all_sweep_results.append(even_results)
-                wandb.log(even_results)
 
 
                 print("Running Uneven Split (factor-based)...")
@@ -146,7 +145,6 @@ def main():
                     "split_type": "uneven",
                 })
                 all_sweep_results.append(uneven_results)
-                wandb.log(uneven_results)
 
 
                 print("Running LUT Split...")
@@ -184,7 +182,6 @@ def main():
                     "split_type": "lut",
                 })
                 all_sweep_results.append(lut_results)
-                wandb.log(lut_results)
 
 
                 # --- Run Formula Split ---
@@ -221,7 +218,6 @@ def main():
                     "split_type": "formula",
                 })
                 all_sweep_results.append(formula_results)
-                wandb.log(formula_results)
                 
 
                 # --- Run Homogeneous Reference Split ---
@@ -256,7 +252,6 @@ def main():
                     "split_type": "reference_homogeneous",
                 })
                 all_sweep_results.append(ref_results)
-                wandb.log(ref_results)
 
                 time.sleep(1) # Small pause between configurations
                 
@@ -269,6 +264,7 @@ def main():
             df_results = pd.DataFrame(all_sweep_results)
             df_results.to_csv(OUTPUT_CSV_PATH, index=False)
             print(f"Results saved to {OUTPUT_CSV_PATH}")
+            wandb.save(OUTPUT_CSV_PATH) # Save the CSV as a wandb artifact
             generate_and_log_plots(df_results) # New call to generate and log plot
         else:
             print("No results were generated, skipping CSV save and plotting.")

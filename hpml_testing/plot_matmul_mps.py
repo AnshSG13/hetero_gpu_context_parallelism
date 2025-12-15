@@ -3,7 +3,9 @@ from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
+import os # Added import for os
 
+OUTPUT_DIR = "hpml_testing/plots" # Define the output directory globally
 
 def main() -> None:
     if len(sys.argv) < 2:
@@ -13,6 +15,8 @@ def main() -> None:
     csv_path = sys.argv[1]
     df = pd.read_csv(csv_path)
     csv_path = Path(csv_path)
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True) # Ensure the output directory exists
 
     # ---------------------------------------------------------
     # Pre-processing: Calculate Performance Metrics
@@ -59,7 +63,7 @@ def main() -> None:
     plt.grid(True, which="both", linestyle="--", alpha=0.5)
     plt.tight_layout()
     
-    out_file = csv_path.with_suffix(".graph1_latency.png")
+    out_file = os.path.join(OUTPUT_DIR, "matmul_latency_vs_size.png")
     plt.savefig(out_file, dpi=200)
     print(f"Saved {out_file}")
 
@@ -102,65 +106,7 @@ def main() -> None:
     
     plt.tight_layout()
     
-    out_file = csv_path.with_suffix(".graph2_scaling.png")
-    plt.savefig(out_file, dpi=200)
-    print(f"Saved {out_file}")
-
-    # ---------------------------------------------------------
-    # Graph 3: MPS Efficiency (Actual / Theoretical)
-    # (Quantifying the deviation from ideal)
-    # ---------------------------------------------------------
-    plt.figure(figsize=(10, 6))
-    
-    for size in rep_sizes:
-        if size in merged["size"].unique():
-            group = merged[merged["size"] == size].sort_values("mps_pct")
-            
-            # Theoretical Performance = MPS% / 100
-            # Efficiency = Actual_Norm_Perf / Theoretical_Perf
-            # If Result < 1.0, we are underperforming relative to the resource share
-            ratio = group["norm_perf"] / (group["mps_pct"] / 100.0)
-            
-            plt.plot(group["mps_pct"], ratio, marker="o", label=f"N={size}")
-
-    plt.axhline(1.0, color="k", linestyle="--", label="Ideal Efficiency (1.0)")
-    
-    plt.xscale("log")
-    plt.xlabel("MPS Percentage")
-    plt.ylabel("Efficiency (Actual Speed / Theoretical Speed)")
-    plt.title("MPS Efficiency vs Percentage")
-    plt.legend(bbox_to_anchor=(1.02, 1), loc="upper left")
-    plt.grid(True, which="both", linestyle="--", alpha=0.5)
-    plt.xticks(ticks, tick_labels)
-    plt.ylim(bottom=0) # Anchor Y-axis at 0
-    plt.tight_layout()
-    
-    out_file = csv_path.with_suffix(".graph3_efficiency.png")
-    plt.savefig(out_file, dpi=200)
-    print(f"Saved {out_file}")
-
-    # ---------------------------------------------------------
-    # Graph 4: Slowdown Bar Chart (Bonus)
-    # ---------------------------------------------------------
-    plt.figure()
-    
-    # Subset for cleaner bars
-    sizes_for_bar = [4096, 16384, 32768] # Adjust as needed
-    subset = merged[merged["size"].isin(sizes_for_bar)]
-    
-    pivot_df = subset.pivot(index="mps_pct", columns="size", values="slowdown")
-    pivot_df = pivot_df.sort_index(ascending=False)
-    
-    pivot_df.plot(kind="bar", figsize=(12, 6), width=0.8)
-    
-    plt.xlabel("MPS Percentage")
-    plt.ylabel("Slowdown Factor (vs MPS 100%)")
-    plt.title("Slowdown Factor by MPS Setting")
-    plt.legend(title="Matrix Size")
-    plt.grid(axis="y", linestyle="--", alpha=0.5)
-    plt.tight_layout()
-    
-    out_file = csv_path.with_suffix(".graph4_bars.png")
+    out_file = os.path.join(OUTPUT_DIR, "matmul_performance_scaling.png")
     plt.savefig(out_file, dpi=200)
     print(f"Saved {out_file}")
 
