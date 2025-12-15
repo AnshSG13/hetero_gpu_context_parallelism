@@ -8,7 +8,7 @@ import argparse
 
 # --- Configuration ---
 SEQLEN_SWEEP = [4096, 8192, 16384, 32768, 65536, 131072]
-SLOWDOWN_SWEEP = [80, 40, 20] 
+SLOWDOWN_SWEEP = [90, 80, 70, 60, 50, 40, 30, 20, 10] # MPS percentage for the slower GPU 
 DEFAULT_PROFILE_PATH = "hpml_testing/results/ring_attention_profile.csv"
 OUTPUT_CSV_PATH = "hpml_testing/results/sweep_results.csv"
 BENCHMARK_SCRIPT = "hpml_testing/benchmark_hetero_latency.py"
