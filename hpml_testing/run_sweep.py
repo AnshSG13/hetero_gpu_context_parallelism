@@ -5,6 +5,7 @@ import pandas as pd
 import math
 import time
 import argparse
+import wandb
 
 # --- Configuration ---
 SEQLEN_SWEEP = [4096, 8192, 16384, 32768, 65536, 131072]
@@ -54,6 +55,16 @@ def main():
     )
     args = parser.parse_args()
 
+    # --- WANDB Integration: Initialize Run ---
+    wandb.init(
+        project="heterogeneous-ring-attention",
+        config={
+            "seq_len_sweep": SEQLEN_SWEEP,
+            "slowdown_sweep": SLOWDOWN_SWEEP,
+            "profile_path": args.profile_path
+        }
+    )
+
     print("Starting benchmark sweep...")
     print(f"Using performance profile for LUT strategy: {args.profile_path}")
     
@@ -100,6 +111,7 @@ def main():
                     "split_type": "even", 
                 })
                 all_sweep_results.append(even_results)
+                wandb.log(even_results)
 
 
                 print("Running Uneven Split (factor-based)...")
@@ -133,6 +145,7 @@ def main():
                     "split_type": "uneven",
                 })
                 all_sweep_results.append(uneven_results)
+                wandb.log(uneven_results)
 
 
                 print("Running LUT Split...")
@@ -170,6 +183,7 @@ def main():
                     "split_type": "lut",
                 })
                 all_sweep_results.append(lut_results)
+                wandb.log(lut_results)
 
 
                 # --- Run Formula Split ---
@@ -206,6 +220,7 @@ def main():
                     "split_type": "formula",
                 })
                 all_sweep_results.append(formula_results)
+                wandb.log(formula_results)
                 
 
                 # --- Run Homogeneous Reference Split ---
@@ -240,16 +255,19 @@ def main():
                     "split_type": "reference_homogeneous",
                 })
                 all_sweep_results.append(ref_results)
+                wandb.log(ref_results)
 
                 time.sleep(1) # Small pause between configurations
                 
     except Exception as e:
         print(f"An error occurred during the sweep: {e}")
-
-    print("\nSweep finished. Saving results to CSV...")
-    df_results = pd.DataFrame(all_sweep_results)
-    df_results.to_csv(OUTPUT_CSV_PATH, index=False)
-    print(f"Results saved to {OUTPUT_CSV_PATH}")
+    finally:
+        # --- WANDB Integration: Finish Run ---
+        print("\nSweep finished. Saving results and closing wandb run...")
+        df_results = pd.DataFrame(all_sweep_results)
+        df_results.to_csv(OUTPUT_CSV_PATH, index=False)
+        print(f"Results saved to {OUTPUT_CSV_PATH}")
+        wandb.finish()
 
 if __name__ == "__main__":
     main()
