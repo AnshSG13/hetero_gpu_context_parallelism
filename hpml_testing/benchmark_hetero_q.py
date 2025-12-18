@@ -15,7 +15,7 @@ from pathlib import Path
 
 from fms import models
 from fms.distributed.strategy import NoOpStrategy
-from fms.distributed.ring_attention import reset_layer_counter, print_timing_summary
+from hetero_gpu_context_parallelism.hpml_testing.ring_attention import reset_layer_counter, print_timing_summary
 
 SUMMARY_HEADERS = ["split_ratio", "gpu0_tokens", "gpu1_tokens", "total_tokens", "ttft_ms", "gpu0_time_ms", "gpu1_time_ms"]
 

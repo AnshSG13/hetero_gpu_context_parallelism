@@ -15,7 +15,7 @@ from fms.distributed.strategy import (
     TensorParallelStrategy,
     RingAttentionStrategy,
 )
-from fms.distributed.ring_attention import ring_forward
+from hetero_gpu_context_parallelism.hpml_testing.ring_attention import ring_forward
 from fms.modules.attention import (
     AttentionKwargs,
     MultiHeadAttention,

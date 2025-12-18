@@ -2,7 +2,7 @@ import torch
 import math
 
 # Import your Triton function
-from triton_offdiag_block import block_softmax_stats_triton
+from hetero_gpu_context_parallelism.fms.distributed.triton_block import block_softmax_stats_triton
 
 # Naive reference implementation (matches your Python code)
 def block_softmax_stats_naive(Q, K, V, query_indices, key_indices, scale, causal):

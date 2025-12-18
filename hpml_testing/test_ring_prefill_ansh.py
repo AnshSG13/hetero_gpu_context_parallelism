@@ -32,7 +32,7 @@ def main():
 
     # Import after dist init
     from fms.distributed.strategy import RingAttentionStrategy
-    from fms.distributed.ring_attention import _compute_attention_ring_pass_kv
+    from hetero_gpu_context_parallelism.hpml_testing.ring_attention import _compute_attention_ring_pass_kv
 
     # Test config
     batch_size = 1

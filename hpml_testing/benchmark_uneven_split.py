@@ -13,7 +13,7 @@ from pathlib import Path
 from fms import models
 from fms.utils import tokenizers
 from fms.distributed.strategy import NoOpStrategy
-from fms.distributed.ring_attention import reset_layer_counter, print_timing_summary
+from hetero_gpu_context_parallelism.hpml_testing.ring_attention import reset_layer_counter, print_timing_summary
 
 SUMMARY_HEADERS = ["strategy", "prompt_tokens", "ttft_ms", "avg_decode_ms", "total_time_ms"]
 

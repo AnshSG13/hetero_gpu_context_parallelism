@@ -13,7 +13,7 @@ _TRITON_MIN_WORK = 204800000000000000000000
 # 4096000000000  # or 16384, tune based on your profiling
 
 try:
-    from .triton_block import block_softmax_stats_triton
+    from ..fms.distributed.triton_block import block_softmax_stats_triton
     _HAS_TRITON = True
 except ImportError as e:
     print("[Triton IMPORT ERROR]", e)

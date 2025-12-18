@@ -7,7 +7,7 @@ import math  # you don't actually need this now, but ok
 
 # Import after torch / dist but BEFORE usage
 from fms.distributed.strategy import RingAttentionStrategy
-from fms.distributed.ring_attention import _compute_attention_ring_pass_kv
+from hetero_gpu_context_parallelism.hpml_testing.ring_attention import _compute_attention_ring_pass_kv
 
 
 def main():
@@ -35,7 +35,7 @@ def main():
 
         # Import after dist init
     from fms.distributed.strategy import RingAttentionStrategy
-    from fms.distributed.ring_attention import _compute_attention_ring_pass_kv
+    from hetero_gpu_context_parallelism.hpml_testing.ring_attention import _compute_attention_ring_pass_kv
     # -----------------------------
     # Per-rank "speed" from MPS
     # -----------------------------
