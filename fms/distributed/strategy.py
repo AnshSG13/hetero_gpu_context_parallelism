@@ -1,11 +1,10 @@
 import os
 from abc import abstractmethod
 from typing import List, Optional, Tuple, Any
-import time
 
 import torch
 import math
-from torch import Tensor, nn
+from torch import nn
 import torch.distributed
 import torch.distributed as dist
 from torch.distributed import P2POp

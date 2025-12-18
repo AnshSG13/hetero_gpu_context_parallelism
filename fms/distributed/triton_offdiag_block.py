@@ -68,7 +68,7 @@ def _offdiag_block_stats_kernel(
     NEG_INF = -1e9
     # Running stats per query in this block
     m = tl.full((BLOCK_Q,), NEG_INF, tl.float32)
-    l = tl.zeros((BLOCK_Q,), tl.float32)
+    l_acc = tl.zeros((BLOCK_Q,), tl.float32)
     z = tl.zeros((BLOCK_Q, D_V), tl.float32)
 
     # Loop over K in BLOCK_K tiles
@@ -135,7 +135,7 @@ def _offdiag_block_stats_kernel(
         beta = tl.exp(m_tile - new_m)
 
         z = z * alpha[:, None] + z_tile * beta[:, None]
-        l = l * alpha + l_tile * beta
+        l = l_acc * alpha + l_tile * beta
         m = new_m
 
     # Write back: Z[b,h,q,:], M[b,h,q], L[b,h,q]
@@ -162,7 +162,7 @@ def _offdiag_block_stats_kernel(
         + h_idx * stride_lh
         + q_offsets * stride_lq
     )
-    tl.store(L_base_ptr, l, mask=q_mask)
+    tl.store(L_base_ptr, l_acc, mask=q_mask)
 
 
 

@@ -1,12 +1,10 @@
 import math
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 from torch import Tensor
 from typing import Optional, Tuple
 
 from fms.modules.attention import MultiHeadAttention
-from fms.distributed.strategy import DistributedStrategy, RingAttentionStrategy
+from fms.distributed.strategy import RingAttentionStrategy
 
 # Use Triton only when block size is big enough (Q_len*K_len)
 _TRITON_MIN_WORK = 2048
