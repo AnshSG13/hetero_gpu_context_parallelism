@@ -165,8 +165,13 @@ class TensorParallelStrategy(DistributedStrategy):
 
 
 class RingAttentionStrategy(DistributedStrategy):
+    """
+    Distributed strategy for heterogeneity-aware ring attention.
+    Supports uneven token partitioning via `block_lens` for load balancing.
+    """
+
     def __init__(
-        self,block_lens: List[int], block_size: Optional[int] = None, group: Optional[dist.ProcessGroup] = None, from_meta: bool = False
+        self, block_lens: List[int], block_size: Optional[int] = None, group: Optional[dist.ProcessGroup] = None, from_meta: bool = False
     ):
         super().__init__(from_meta)
 
@@ -256,11 +261,7 @@ class RingAttentionStrategy(DistributedStrategy):
         iteration: int,
         enable_timing: bool = False,
     ) -> Tuple[Any, torch.Tensor, torch.Tensor, int, Optional[torch.cuda.Event]]:
-        """
-        Start async KV ring shift. Returns (requests, recv_k, recv_v, recv_len, comm_start_event).
-        Communication runs on dedicated stream for overlap with compute.
-        If enable_timing=True, returns CUDA event for start time. End event is recorded in ring_shift_kv_wait.
-        """
+        """Start async P2P send/recv of KV tensors to next/from prev rank."""
         # After iteration i, we receive from rank (self.rank - (i+1)) % world_size
         source_rank = (self.rank - (iteration + 1)) % self.world_size
         recv_len = self.block_lens[source_rank]
@@ -318,9 +319,7 @@ class RingAttentionStrategy(DistributedStrategy):
         recv_len: int,
         enable_timing: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, int, Optional[torch.cuda.Event], Optional[torch.cuda.Event]]:
-        """
-        Wait for async KV shift to complete. Returns (k, v, valid_len, comm_end_event, sync_event).
-        """
+        """Wait for async KV shift to complete and return received tensors."""
         if reqs is None:
             return recv_k, recv_v, recv_len, None, None
 

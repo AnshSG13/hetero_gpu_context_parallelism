@@ -1,3 +1,10 @@
+"""
+Triton kernels for block-wise attention computation.
+
+Provides GPU-accelerated kernels for computing partial attention statistics
+that can be merged using online softmax. Used by ring attention to compute
+attention over KV blocks received from other ranks.
+"""
 import triton  # type: ignore[import-untyped]
 import triton.language as tl  # type: ignore[import-untyped]
 import torch
@@ -178,6 +185,10 @@ def block_softmax_stats_triton(
     block_q: int = 32,
     block_k: int = 64,
 ):
+    """
+    Triton kernel for block-wise attention stats (z, l, m) used in online softmax.
+    Returns partial results that can be merged across ring iterations.
+    """
     assert Q.is_cuda and K.is_cuda and V.is_cuda
     B, H, Q_len, D_k = Q.shape
     _, _, K_len, D_v = V.shape

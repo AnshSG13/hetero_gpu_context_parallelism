@@ -1,3 +1,17 @@
+"""
+Ring Attention with Heterogeneous GPU Support.
+
+This module implements distributed ring attention for long-context LLM inference,
+with support for heterogeneous GPU configurations. Key features:
+
+- Uneven token partitioning across ranks based on GPU capabilities
+- Online softmax for correct attention merging across variable-sized shards
+- Async P2P communication overlapped with compute via separate CUDA streams
+- Custom Triton kernels for block-wise attention statistics
+
+The main entry point is `ring_attention()`, which is called from LLaMABlock
+when the "ring" distributed strategy is enabled.
+"""
 import math
 import torch
 from torch import Tensor
@@ -38,7 +52,7 @@ def ring_forward(
     is_causal_mask=False,
     attn_algorithm=None
 ):
-
+    """LLaMABlock forward pass using ring attention instead of standard attention."""
     residual = x
     x_norm = self.ln(x)
 
@@ -87,7 +101,10 @@ def ring_attention(
     use_cache: bool = False,
     causal: bool = False,
 ):
-
+    """
+    Distributed ring attention with heterogeneous partitioning.
+    KV tensors rotate around the ring while Q stays local.
+    """
     batch_size, num_valid_tokens_input_shard, emb_dim = x_norm.shape
 
     #decode check
@@ -310,9 +327,8 @@ def _compute_attention_ring_pass_kv(
     causal: bool,
 ) -> Tensor:
     """
-    Ring attention with online softmax and async comm/compute overlap.
-    Uses Triton/stats-based computation for ALL blocks to ensure correct
-    online softmax merging and prevent deadlocks (all ranks execute same code path).
+    Main ring loop: overlap async KV communication with attention compute.
+    Uses online softmax to merge results across heterogeneous shards.
     """
     global _layer_call_counter, _printed_stream_info, _total_compute_ms, _total_comm_ms, _total_bytes
 

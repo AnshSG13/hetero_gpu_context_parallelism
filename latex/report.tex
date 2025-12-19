@@ -53,7 +53,7 @@ This synchronization constraint gives rise to the well-known straggler effect: f
 %%Specifically, higher-performance nodes complete their attention sub-problems rapidly and become idle, forced to wait for the slowest node (the \textit{straggler}) to complete its computation or transmission. This "straggler effect" causes the aggregate system throughput to collapse to the speed of the weakest device multiplied by the number of nodes. As a result, the superior compute throughput and memory bandwidth of modern accelerators in the ring are wasted, and the latency of end-to-end inference remains unacceptably high despite the presence of capable hardware.
 
 \subsection{Objectives and Scope}
-Building on this prior work, our project seeks to extend context parallelism to heterogeneous environments. Specifically, we will investigate heterogeneity in ring attention within IBM’s FMS\cite. While earlier implementations demonstrated the benefits of context splitting across homogeneous GPUs, our focus is on uneven context allocation strategies: distributing query, key, and value shards across heterogeneous GPUs in proportion to their compute capabilities. By adapting context parallelism to heterogeneous clusters, we aim to mitigate performance degradation caused by weaker nodes and enable the scalability of long-context inference in heterogeneous environments.
+Building on this prior work, our project seeks to extend context parallelism to heterogeneous environments. Specifically, we will investigate heterogeneity in ring attention within IBM’s FMS \cite{foundation_model_stack} . While earlier implementations demonstrated the benefits of context splitting across homogeneous GPUs, our focus is on uneven context allocation strategies: distributing query, key, and value shards across heterogeneous GPUs in proportion to their compute capabilities. By adapting context parallelism to heterogeneous clusters, we aim to mitigate performance degradation caused by weaker nodes and enable the scalability of long-context inference in heterogeneous environments.
 
 \section{Literature Review}
 \subsection{Review of Relevant Literature}
@@ -73,11 +73,11 @@ Finally, several algorithmic variants aim to support long or unbounded context l
 %%There is also work on algorithmic variants for long-context attention that aim to reduce the effective cost per token without changing the underlying hardware. Star Attention and Infini-attention both restructure the attention pattern to support infinite or near-infinite context via sparsity, compressed state, or special memory tokens, rather than by sharding the KV cache across devices \cite{acharya2024star,munkhdalai2024leave}. While these methods significantly improve scalability for a single model instance, they introduce architectural changes and approximations to standard attention, and they do not address how to balance work across heterogeneous GPUs within an existing exact ring-attention setup.
 
 \subsection{Identification of Gaps in Existing Research}
-Existing ring\-attention implementations assume symmetric hardware and therefore partition the KV cache uniformly. In a heterogeneous setting, this creates the exact straggler behavior described in our introduction: faster GPUs frequently idle while waiting for slower ranks to finish their shard of attention and communication, collapsing throughput to the speed of the weakest device.
+Existing ring\-attention implementations assume symmetric hardware and therefore partition the KV cache uniformly. In heterogeneous settings, this leads directly to the straggler behavior described earlier: faster GPUs frequently idle while waiting for slower ranks to complete their portion of attention and communication, reducing overall throughput to that of the weakest rank.
 
 Moreover, most ring-attention implementations combine FlashAttention-style kernels with homogeneous context splits. They exploit tiling and SRAM reuse on each device, but they do not adapt how many tokens each GPU owns based on its effective throughput, nor do they combine this with an online-softmax formulation that can safely aggregate attention across uneven KV shards.
 
-Our work directly targets this gap: we study heterogeneity-aware context parallelism in ring attention within IBM’s FMS. Concretely, we (i) quantify the slowdown that realistic intra-node heterogeneity induces under standard even context splits, and (ii) propose and evaluate uneven KV-sharding strategies that allocate longer context segments to faster GPUs, while preserving exact attention using an online-softmax-compatible ring kernel. This positions our contribution at the intersection of FlashAttention-style memory-efficient kernels, ring-based context parallelism, and heterogeneous-systems scheduling, but focused specifically on context splitting for long-sequence inference on heterogeneous GPUs.  
+Our work addresses this gap by studying heterogeneity-aware context parallelism for ring attention within IBM’s FMS. We (i) quantify the slowdown introduced by realistic intra-node heterogeneity under standard uniform context splits, and (ii) propose and evaluate uneven KV-sharding strategies that allocate larger context segments to faster GPUs while preserving exact attention through an online-softmax-compatible ring kernel. %This places our contribution at the intersection of memory-efficient attention kernels, ring-based context parallelism, and heterogeneous-systems scheduling, with a specific focus on context partitioning for long-sequence inference on mixed-performance GPUs.
 
 \section{Methodology}
 \subsection{Model Selection}
@@ -101,9 +101,9 @@ n_0 = N \cdot \frac{1}{1 + s}, \quad n_1 = N \cdot \frac{s}{1 + s}
 \end{equation}
 This ensures that both ranks complete their workload in approximately the same time, minimizing idle cycles.
 
-\textbf{LUT Split.} Rather than assuming a linear relationship between MPS percentage and performance, we construct a lookup table (LUT) from offline profiling. For each combination of sequence length and MPS setting, we measure actual execution time and use these measurements to derive optimal token allocations. This approach captures non-linear effects that the simple proportional model may miss.
+\textbf{Lookup Table Split.} Rather than assuming a linear relationship between MPS percentage and performance, we construct a lookup table (LUT) from offline profiling. For each combination of sequence length and MPS setting, we measure actual execution time and use these measurements to derive optimal token allocations. This approach captures non-linear effects that the simple proportional model may miss.
 
-\textbf{Formula Split.} We fit a polynomial regression model to the profiling data, yielding a closed-form expression for predicted performance as a function of sequence length and MPS percentage. The fitted model achieves $R^2 = 0.922$ and allows token allocation without requiring a full lookup table.
+\textbf{Regression-Based Split.} We fit a polynomial regression model to the profiling data, yielding a closed-form expression for predicted performance as a function of sequence length and MPS percentage. The fitted model achieves $R^2 = 0.922$ and allows token allocation without requiring a full lookup table.
 
 Figure~\ref{fig:token_dist} illustrates how these strategies redistribute tokens across ranks as heterogeneity increases. At mild heterogeneity (90\% MPS), all strategies produce similar allocations. At severe heterogeneity (10\% MPS), the adaptive strategies shift substantially more tokens to the faster rank.
 
@@ -114,9 +114,9 @@ Figure~\ref{fig:token_dist} illustrates how these strategies redistribute tokens
 \end{figure}
 
 \subsection{Profiling Tools and Methods}
-To simulate heterogeneous GPU performance within a homogeneous cluster, we use NVIDIA's Multi-Process Service (MPS) to throttle individual GPUs to a fraction of their full compute capacity. MPS allows multiple processes to share a GPU and, critically, enables limiting the percentage of SM (Streaming Multiprocessor) resources available to each process. By setting MPS active thread percentage to values between 10\% and 100\%, we can emulate GPUs with varying compute capabilities.
+To simulate heterogeneous GPU performance within a homogeneous cluster, we use NVIDIA's Multi-Process Service (MPS) \cite{nvidia_mps_docs} to throttle individual GPUs to a fraction of their full compute capacity. MPS allows multiple processes to share a GPU and, critically, enables limiting the percentage of Streaming Multiprocessors (SM) resources available to each process. By setting MPS active thread percentage to values between 10\% and 100\%, we can emulate GPUs with varying compute capabilities.
 
-We first characterize the relationship between MPS throttling and actual compute performance through microbenchmarks. Figure~\ref{fig:matmul_latency} shows matrix multiplication latency across different matrix sizes and MPS settings. The results confirm that MPS throttling produces predictable performance degradation that scales with problem size.
+We first characterize the relationship between MPS throttling and actual compute performance through a custom benchmark. Figure~\ref{fig:matmul_latency} shows matrix multiplication latency across different matrix sizes and MPS settings. The results confirm that MPS throttling produces predictable performance degradation that scales with problem size.
 
 \begin{figure}[htbp]
 \centerline{\includegraphics[width=\columnwidth]{images/matmul_mps_sweep.graph1_latency.png}}
@@ -143,22 +143,28 @@ To enable the formula-based partitioning strategy, we fit a degree-2 polynomial 
 \subsection{Evaluation Metrics}
 We evaluate partitioning strategies using the following metrics:
 
-\textbf{Prefill latency.} The wall-clock time for the attention layer to complete across all ranks, determined by the slowest rank. Since ring attention requires synchronization between ranks, overall latency is bounded by the straggler.
+\textbf{Prefill latency.} The wall-clock time for the attention layer to complete across all ranks.% determined by the slowest rank. Since ring attention requires synchronization between ranks, overall latency is bounded by the straggler.
 
 \textbf{Slowdown factor.} The ratio of heterogeneous execution time to homogeneous baseline execution time: $\text{Slowdown} = T_{hetero} / T_{homo}$. A slowdown of 1.0 indicates no performance loss from heterogeneity.
 
 \textbf{Efficiency.} The inverse of slowdown, expressed as a percentage: $\text{Efficiency} = (T_{homo} / T_{hetero}) \times 100\%$. This measures how much of the ideal (homogeneous) performance is retained.
 
-\textbf{Speedup over baseline.} The ratio of even-split latency to adaptive-strategy latency: $\text{Speedup} = T_{even} / T_{adaptive}$. This quantifies the improvement from using heterogeneity-aware partitioning.
+\textbf{Speedup over baseline.} The ratio of even-split latency to adaptive-strategy latency: $\text{Speedup} = T_{even} / T_{adaptive}$. This quantifies the performance gain from heterogeneity-aware KV partitioning.
 
 \section{Experimental Results}
 
 \subsection{Experimental Setup}
-All experiments are conducted on a single node equipped with two NVIDIA L40 GPUs. We use IBM's Foundation Model Stack with our modified RingAttentionStrategy implementation.
+All experiments are conducted on a single node equipped with two NVIDIA L40 GPUs using IBM’s Foundation Model Stack and our custom Ring-Attention implementation. Hardware heterogeneity is emulated leveraging MPS. Specifically, we fix rank 0 at 100\% MPS and vary rank 1’s allocation from 10\% to 90\% in increments of 10\%, yielding heterogeneity ratios from roughly 1.1:1 (mild) to 10:1 (severe). We sweep sequence lengths from 4,096 to 65,536 tokens to cover the range relevant for long-context inference.
 
-Hardware heterogeneity is simulated rather than using different GPU models. To simulate heterogeneity, we run rank 0 at 100\% MPS and vary rank 1's MPS allocation from 10\% to 90\% in increments of 10\%. This creates heterogeneity ratios ranging from 1.1:1 (mild) to 10:1 (severe). We sweep sequence lengths from 4,096 to 65,536 tokens, covering the range relevant to long-context inference workloads.
+To isolate systems-level behavior from model semantics, we use synthetic inputs throughout. For single-layer ring-attention microbenchmarks, we generate random Q, K, and V tensors directly on the GPU.
 
-To decouple systems behavior from model quality, we use synthetic inputs throughout. For the single-layer ring-attention microbenchmarks, we directly sample random Q,K,V tensors on GPU.
+Each configuration is run five times following a warmup pass, and we report the median latency. The homogeneous baseline runs both ranks at 100\% MPS with an even KV partition.
+
+%All experiments are conducted on a single node equipped with two NVIDIA L40 GPUs. We use IBM's Foundation Model Stack with our custom Ring-Attention implementation.
+
+%Hardware heterogeneity is simulated rather than using different GPU models. To simulate heterogeneity, we run rank 0 at 100\% MPS and vary rank 1's MPS allocation from 10\% to 90\% in increments of 10\%. This creates heterogeneity ratios ranging from 1.1:1 (mild) to 10:1 (severe). We sweep sequence lengths from 4,096 to 65,536 tokens, covering the range relevant to long-context inference workloads.
+
+%To decouple systems behavior from model quality, we use synthetic inputs throughout. For the single-layer ring-attention microbenchmarks, we directly sample random Q,K,V tensors on GPU.
 
 Each configuration is run 5 times after a warmup pass, and we report the median latency. The reference homogeneous baseline runs both ranks at 100\% MPS with even partitioning.
 
@@ -208,7 +214,7 @@ Figure~\ref{fig:efficiency} shows efficiency (relative to homogeneous baseline) 
 The uneven split strategy's consistent strong performance suggests that a simple proportional allocation based on known rank capabilities is sufficient for most scenarios. The additional complexity of LUT or formula-based approaches provides marginal benefit and may introduce brittleness when the profiling conditions do not match runtime conditions.
 
 \subsection{Comparison with Previous Studies}
-Prior work on context parallelism, including the original ring attention paper and IBM's FMS implementation, focused exclusively on homogeneous configurations. To our knowledge, this is the first systematic study of ring attention performance under controlled heterogeneity. Our results demonstrate that the implicit homogeneity assumption in existing implementations leads to severe performance degradation when violated, and that simple modifications to the partitioning strategy can largely recover the lost performance.
+Prior work on context parallelism, including the original ring attention paper and IBM's FMS implementation, focused exclusively on homogeneous configurations. To our knowledge, this is the first study of ring attention performance under controlled heterogeneity. Our results demonstrate that the implicit homogeneity assumption in existing implementations leads to severe performance degradation when violated, and that simple modifications to the partitioning strategy can largely recover the lost performance.
 
 \subsection{Challenges and Limitations}
 Several limitations affect the generalizability of our results. First, we simulate heterogeneity using MPS throttling rather than actual mixed hardware. While MPS provides controllable and reproducible heterogeneity, real mixed-GPU deployments may exhibit different performance characteristics, particularly in communication patterns.
