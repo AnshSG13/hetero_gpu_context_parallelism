@@ -46,6 +46,11 @@ wandb
 ibm-fms
 ```
 
+## Experiment Tracking
+
+Benchmark results and metrics are logged to Weights & Biases:
+**[View W&B Dashboard](https://wandb.ai/wb2426-columbia-university/heterogeneous-ring-attention/runs/thopykvx?nw=nwuserwb2426)**
+
 ## Demo
 
 To run a sweep demonstration of the ring attention implementation and various partitioning strategies, execute:
