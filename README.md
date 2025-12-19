@@ -1,135 +1,240 @@
-# Foundation Model Stack
+# Heterogeneity-Aware Context Parallelism in Ring Attention
 
-Foundation Model Stack is a collection of components for development, inference, training, and tuning of foundation models leveraging PyTorch native components. For inference optimizations we aim to support PyTorch compile, accelerated transformers, and tensor parallelism. At training time we aim to support FSDP, accelerated transformers, and PyTorch compile. To enable these optimizations, we will provide reimplementations of several popular model architectures starting with Llama and GPT-BigCode.
+This repository contains the code, experiments, and analysis for **Heterogeneity-Aware Context Parallelism in Ring Attention**, a study of how intra-node GPU heterogeneity impacts ring attention performance and how heterogeneity-aware KV partitioning can mitigate straggler effects in long-context LLM inference.
 
-## Models Supported
+---
 
-| Model family | Inference | Tuning and Training |
-|--------------| ---------- | ------------------ |
-| LLaMA        | :heavy_check_mark: | :heavy_check_mark: |
-| GPT-BigCode  | :heavy_check_mark: | :x: |
-| RoBERTa      | :heavy_check_mark: | :x: |
+## Overview
 
-## Installation
+### Background and Motivation
+Large Language Model (LLM) inference increasingly relies on **context parallelism** techniques such as Ring Attention to scale to long sequence lengths beyond single-GPU memory limits. Existing implementations implicitly assume **homogeneous hardware**, uniformly partitioning the KV cache across ranks.
 
-We recommend running this on Python 3.11 and CUDA 12.1 for best performance, as the CPU overheads of the models are reduced significantly.
+In practice, however, datacenter deployments may exhibit **intra-node heterogeneity** due to partial upgrades, throttling, or degraded devices. In synchronous distributed execution, this heterogeneity induces severe **straggler effects**, collapsing system throughput to that of the slowest rank.
 
-### Pypi
+### What This Project Does
+This project:
+- Quantifies the performance degradation caused by GPU heterogeneity in ring attention
+- Implements **heterogeneity-aware context partitioning strategies**
+- Evaluates multiple allocation schemes under controlled heterogeneity
+- Demonstrates substantial recovery of lost performance with simple proportional KV sharding
 
-```shell
-pip install ibm-fms
+### Key Contributions
+- Empirical characterization of heterogeneity-induced slowdown in ring attention
+- Design and implementation of uneven KV partitioning strategies
+- Evaluation of lookup-table and regression-based allocation models
+- Open-source integration with IBM’s Foundation Model Stack (FMS)
+
+---
+
+## Dependencies and Environment Setup
+
+### System Requirements
+- **OS:** Linux (required for distributed training)
+- **Python:** 3.11 recommended for best performance
+- **CUDA:** >= 12.1
+- **PyTorch:** >= 2.1
+- **GPUs:** 2+ NVIDIA GPUs with P2P support
+
+### Installation
+
+**1. Clone the repository:**
+```bash
+git clone https://github.com/AnshSG13/hetero_gpu_context_parallelism.git
+cd hetero_gpu_context_parallelism
 ```
 
-### Local
+**2. Install PyTorch with CUDA (if not already installed):**
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+```
+> **Note:** This step ensures GPU support. If you skip this, `pip install -e .` may install CPU-only PyTorch.
 
-Requires [PyTorch >= 2.1](https://pytorch.org/get-started/locally/).
-
-```shell
+**3. Install the package:**
+```bash
 pip install -e .
 ```
 
-For installing the development dependencies, use:
-
-```shell
-pip install .[dev]
+**4. Install additional dependencies for benchmarking:**
+```bash
+pip install triton numpy pandas matplotlib scikit-learn wandb
 ```
 
-For installing the Hugging Face specific dependencies, use:
+## Report
 
-```shell
-pip install .[hf]
+The full technical report is available at [`latex/report.pdf`](latex/report.pdf).
+
+## Experiment Tracking
+
+Benchmark results and metrics are logged to Weights & Biases:
+**[View W&B Dashboard](https://wandb.ai/wb2426-columbia-university/heterogeneous-ring-attention/runs/thopykvx?nw=nwuserwb2426)**
+
+## Demo
+
+To run a sweep demonstration of the ring attention implementation and various partitioning strategies, execute:
+
+```bash
+./demo.sh
 ```
 
-## Inference
+## Ring Attention Implementation
 
-### Approach
+This section describes the code changes and new components introduced to support **heterogeneity-aware ring attention** within IBM’s Foundation Model Stack (FMS). The implementation extends the existing distributed strategy framework to allow uneven context partitioning across ranks and overlaps communication with computation using separate CUDA streams.
 
-Our approach for inference optimization is to use PyTorch compile, accelerated transformers, and tensor parallelism. PyTorch compile compiles the code into optimized kernels, accelerated transformers leverages `scaled_dot_product_attention` (SDPA) for accelerating attention computation while saving memory, and tensor parallelism is necessary for larger models.
+---
 
-To enable the Llama models to compile, we had to reimplement `RoPE` encodings without complex numbers. With this change, Llama model inference is able to leverage model compilation for latency reduction.
+### Modified Files
 
-### Inference latency
+- **`fms/distributed/strategy.py`**  
+  Added a new `RingAttentionStrategy` class that implements context parallelism using a ring topology.  
+  Key changes include:
+  - Separate CUDA streams for compute and communication to enable overlap
+  - Support for uneven token distribution via a `block_lens` parameter  
+  - Initial infrastructure for heterogeneity-aware partitioning (work in progress)
 
-We measured inference latencies with 1024 token prompt and generation of 256 tokens on AWS P4de instance nodes with 8 80G A100 GPUs and report the median latency in the below table.
+- **`fms/models/__init__.py`**  
+  Registered `"ring"` as a valid distributed strategy option.  
+  The module now parses the `block_lens` argument from keyword arguments and forwards it to the strategy.
 
-| Model | # GPUs | Median latency (ms) |
-| ----- | ----------- | ----- |
-| 7B | 1 | 14ms |
-| 13B | 1 | 22ms |
-| 70B | 8 | 30ms |
+- **`fms/models/llama.py`**  
+  Modified `LLaMABlock` and `LLaMAHeadless` to support ring attention execution.  
+  Standard attention calls are conditionally replaced with the ring-based attention path when the `"ring"` strategy is enabled.
 
-If you would like to reproduce the latencies, you can run the `scripts/benchmark_inference.py` and the details are described in [inference](./scripts).
+---
 
-For more information on reproducing the benchmarks and running some examples, see [here](scripts/README.md)
+### New Files
 
-## HF Model Support
+- **`fms/distributed/ring_attention.py`**  
+  Contains the core ring attention implementation.  
+  - `ring_forward()` is invoked from `LLaMABlock` and replaces the standard attention forward pass  
+  - `_compute_attention_ring_pass_kv()` implements the main ring loop, where KV blocks are rotated across ranks  
+  - Uses two CUDA streams: the default stream for attention compute and a dedicated stream for peer-to-peer communication  
+  - Relies on an online softmax formulation to correctly accumulate attention across uneven KV shards
 
-The support for HF models is provided by our HF model adapter. One can obtain similar latencies as tabulated above with HF models using our HF model adapter:
+- **`fms/distributed/triton_block.py`**  
+  Implements a custom Triton kernel used for block-wise attention computation.  
+  - Computes per-block softmax statistics (partial sums and maxima)  
+  - Enables correct online softmax merging across local and remote KV blocks  
+  - Used by the ring attention path for off-diagonal (remote KV) attention tiles
 
-```python
-from fms.models import get_model
-from fms.models.hf import to_hf_api
-import torch
-from transformers import pipeline
-# fms model
-llama = get_model("llama", "13b")
+- **`hpml_testing/`**  
+  Contains benchmarking and testing utilities used to evaluate heterogeneous ring attention behavior.
 
-# huggingface model backed by fms internals
-llama_hf = to_hf_api(llama)
+- **`hpml_testing/run_hetero_benchmark.sh`**  
+  Shell script for running heterogeneous ring attention benchmarks.  
+  - Evaluates four partitioning strategies (even, uneven, LUT, formula)  
+  - Configures simulated heterogeneity via MPS throttling
 
-# compile the model -- in HF, the decoder only
-llama_hf.decoder = torch.compile(llama_hf.decoder)
+- **`hpml_testing/benchmark_hetero_latency.py`**  
+  Python script invoked by the benchmark shell script.  
+  - Runs ring attention microbenchmarks under specified MPS configurations  
+  - Logs latency, slowdown, and efficiency metrics for analysis
 
-# generate some text -- the first time will be slow since the model needs to be compiled, but subsequent generations should be faster.
-llama_generator = pipeline(task="text-generation", model=llama_hf, tokenizer=tokenizer)
-llama_generator("""q: how are you? a: I am good. How about you? q: What is the weather like today? a:""")
+---
+
+### Notes
+
+- The current implementation focuses on **prefill (prompt processing)** rather than decode
+- Both query and KV tensors use heterogeneity-aware partitioning based on `block_lens`
+- Support for dynamic rebalancing and multi-rank (>2) heterogeneous rings is future work
+
+---
+
+## Results
+
+### Experimental Setup
+
+All experiments were conducted on a single node with **two NVIDIA L40 GPUs**. Hardware heterogeneity was simulated using NVIDIA MPS (Multi-Process Service) to throttle one GPU's compute capacity:
+- **Rank 0**: 100% MPS (full speed)
+- **Rank 1**: 10%-90% MPS (simulated slower GPU)
+
+We evaluated four partitioning strategies:
+- **Even Split**: Standard uniform partitioning (baseline)
+- **Uneven Split**: Proportional allocation based on GPU capabilities
+- **LUT Split**: Lookup-table based allocation from profiling data
+- **Formula Split**: Regression-based allocation model
+
+Sequence lengths ranged from **4,096 to 65,536 tokens**.
+
+---
+
+### Strategy Comparison
+
+![Strategy Evaluation](latex/images/strtategy_eval.png)
+
+**Figure 1**: Slowdown factor for each partitioning strategy across sequence lengths and MPS configurations. Lower values indicate better performance. The dashed red line at 1.0 represents ideal (homogeneous) performance.
+
+**Key Observations**:
+- Even split performance degrades rapidly as heterogeneity increases, exhibiting **5-8x slowdowns** at 10% MPS
+- Uneven split consistently achieves the best performance, reducing slowdown from 5-8x to approximately **2x** at extreme heterogeneity
+- LUT and formula strategies provide middle-ground performance but rarely outperform simple proportional allocation
+
+---
+
+### Speedup Analysis
+
+![Speedup Heatmap](latex/images/speedup_heatmap.png)
+
+**Figure 2**: Speedup of uneven split over even split. Darker green indicates larger improvements.
+
+The speedup increases with both sequence length and heterogeneity, reaching **4.4x at 65K tokens with 10% MPS**.
+
+---
+
+### Extreme Heterogeneity Performance
+
+![Extreme Heterogeneity](latex/images/extreme_heterogeneity.png)
+
+**Figure 3**: Absolute latency at 10% MPS (extreme heterogeneity).
+
+At extreme heterogeneity:
+- **Even split**: Over 6 seconds for 65K tokens
+- **Uneven split**: Under 1.4 seconds for 65K tokens
+- Adaptive strategies reduce latency by up to **4.4x**
+
+---
+
+### Efficiency Comparison
+
+![Efficiency vs Heterogeneity](latex/images/efficiency_vs_heterogeneity.png)
+
+**Figure 4**: Efficiency relative to homogeneous baseline across MPS configurations.
+
+**Key Observations**:
+- Even split efficiency drops below **20%** at severe heterogeneity (over 80% of potential performance lost to waiting)
+- Adaptive strategies maintain **40-50% efficiency** even at 10% MPS
+- This represents a **2-3x improvement** in resource utilization
+
+---
+
+### Summary of Findings
+
+| Finding | Details |
+|---------|---------|
+| Heterogeneity Impact | Even partitioning causes **>5x slowdown** at 10:1 capability ratios |
+| Best Strategy | Simple proportional (uneven) split achieves up to **4.4x speedup** over even split |
+| Complex Strategies | LUT and formula provide marginal benefit with added complexity |
+| Efficiency Recovery | Adaptive strategies recover **2-3x** more resource utilization |
+
+---
+
+## Repository Structure
+
 ```
-
-A detailed example is provided [here](./notebooks/hf_adapted_inference.ipynb).
-
-## Tuning
-
-To fine-tune LLaMA, use the `scripts/train_causal.py` training script. Here's
-an example of that command.
-
-```shell
-torchrun --nproc_per_node=2 \
-        scripts/train_causal.py \
-        --architecture=llama \
-        --variant=7b \
-        --tokenizer=~/models/tokenizer.model \
-        --model_path=~/models/7B/ \
-        --report_steps=10 \
-        --checkpoint_format=meta \
-        --distributed=fsdp
+.
+├── fms/                          # Modified IBM FMS source
+│   ├── distributed/
+│   │   ├── ring_attention.py     # Core ring attention implementation
+│   │   ├── strategy.py           # RingAttentionStrategy class
+│   │   └── triton_block.py       # Custom Triton kernel
+│   └── models/
+│       ├── __init__.py           # Strategy registration
+│       └── llama.py              # LLaMA model modifications
+├── hpml_testing/                 # Benchmarking scripts
+│   ├── benchmark_hetero_latency.py
+│   ├── run_hetero_benchmark.sh
+│   └── plots/                    # Generated figures
+├── latex/                        # Paper source and figures
+│   ├── report.tex
+│   └── images/
+└── demo.sh                       # Quick demo script
 ```
-
-See options in the script for other ways to train and tune.
-
-## Structure and contents of this Repository
-
-* `fms/models/` - Pure pytorch implementations of popular model architectures, without requiring any specific common interface beyond `nn.Module`. Each model configuration is registered with `fms.models.register_model()` so that instances can be obtained through `fms.models.get_model('architecture', 'variant', '/path/to/data')`. Each model can also register sources/formats/versions of data to load (e.g. checkpoints provided by meta, HF, or trained from this repo). Users of the repo (e.g. `fms-extras`) can register their own model architectures as well.
-* `fms/models/hf/` - Adapters that compose our native PyTorch FMS model architecture implementations in HF-compatible wrapper interfaces. Each FMS model implements an adapter, and adapted instances are obtained via `fms.models.hf.to_hf_api(model)`
-* `fms/datasets/` - Code for loading data for pre-training and fine-tuning. Individual datasets are retrieved by `fms.datasets.get_dataset('name', tokenizer, 'optional path or other data reference')`. The expected tokenizer conforms to an `fms.utils.tokenizers.BaseTokenizer` interface.
-* `fms/modules/` - Components extending `nn.Module` used in our model architecture implementations. Each Module has a corresponding `TPModule` so that modules can be sharded using a tensor-parallel distribution strategy. FMS modules should all support `torch.compile` without graph breaks.
-* `fms/training/` - Pre-training and fine-tuning code.
-* `fms/utils/` - Other operators useful in working with LLMs. These include a `generate()` function, `Tensor` subclasses, code for dealing with LLM checkpoints that might be saved/sharded in a variety of formats, tokenization code, and various other useful helper functions.
-* `scripts/` - Various scripts for inference, benchmarking, and evaluation, as well as an entry-point for tuning/training.
-
-## Extensions and Use Cases
-
-This library is used by [three](https://github.com/foundation-model-stack/foundation-model-stack/network/dependents) dependent projects at IBM.
-
-* [fms-fsdp](https://github.com/foundation-model-stack/fms-fsdp) - This repo shares training code that has been used to pretrain an fms implementation of LLaMA on IBM internal data.
-* [fms-extras](https://github.com/foundation-model-stack/fms-extras) - This repo shares code for additional fms-based models trained by IBM. This repo will also be a home for other extensions, and may also include research or in-developent work intended for eventual upstreaming to fms.
-* [TGIS](https://github.com/IBM/text-generation-inference) - This inference server includes support for serving fms models.
-
-## Open Issues
-
-* <https://github.com/pytorch/pytorch/issues/107824> prevents training/finetuning from working with `torch.compile`.
-* In addition, there are several open issues we are tracking to improve stability and memory footprint of inference
-  
-## References
-
-* Huggingface TGI: <https://github.com/huggingface/text-generation-inference>
-* IBM TGIS: <https://github.com/IBM/text-generation-inference>

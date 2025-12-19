@@ -12,3 +12,17 @@ fms.egg-info
 .mypy_cache
 ibm_fms.egg-info
 fms/_version.py
+hpml_testing/benchmark_results/
+logs/.DS_Store
+logs/*
+.DS_Store
+wandb/
+
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.blg
+*.log
+*.out
+*.toc
+*.synctex.gz
