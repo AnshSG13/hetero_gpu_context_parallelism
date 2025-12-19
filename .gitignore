@@ -26,4 +26,3 @@ wandb/
 *.out
 *.toc
 *.synctex.gz
-latex/*.pdf

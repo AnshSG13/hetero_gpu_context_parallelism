@@ -59,6 +59,10 @@ pip install -e .
 pip install triton numpy pandas matplotlib scikit-learn wandb
 ```
 
+## Report
+
+The full technical report is available at [`latex/report.pdf`](latex/report.pdf).
+
 ## Experiment Tracking
 
 Benchmark results and metrics are logged to Weights & Biases:
