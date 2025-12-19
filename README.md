@@ -119,3 +119,105 @@ This section describes the code changes and new components introduced to support
 - The current implementation focuses on **prefill (prompt processing)** rather than decode
 - Both query and KV tensors use heterogeneity-aware partitioning based on `block_lens`
 - Support for dynamic rebalancing and multi-rank (>2) heterogeneous rings is future work
+
+---
+
+## Results
+
+### Experimental Setup
+
+All experiments were conducted on a single node with **two NVIDIA L40 GPUs**. Hardware heterogeneity was simulated using NVIDIA MPS (Multi-Process Service) to throttle one GPU's compute capacity:
+- **Rank 0**: 100% MPS (full speed)
+- **Rank 1**: 10%-90% MPS (simulated slower GPU)
+
+We evaluated four partitioning strategies:
+- **Even Split**: Standard uniform partitioning (baseline)
+- **Uneven Split**: Proportional allocation based on GPU capabilities
+- **LUT Split**: Lookup-table based allocation from profiling data
+- **Formula Split**: Regression-based allocation model
+
+Sequence lengths ranged from **4,096 to 65,536 tokens**.
+
+---
+
+### Strategy Comparison
+
+![Strategy Evaluation](latex/images/strtategy_eval.png)
+
+**Figure 1**: Slowdown factor for each partitioning strategy across sequence lengths and MPS configurations. Lower values indicate better performance. The dashed red line at 1.0 represents ideal (homogeneous) performance.
+
+**Key Observations**:
+- Even split performance degrades rapidly as heterogeneity increases, exhibiting **5-8x slowdowns** at 10% MPS
+- Uneven split consistently achieves the best performance, reducing slowdown from 5-8x to approximately **2x** at extreme heterogeneity
+- LUT and formula strategies provide middle-ground performance but rarely outperform simple proportional allocation
+
+---
+
+### Speedup Analysis
+
+![Speedup Heatmap](latex/images/speedup_heatmap.png)
+
+**Figure 2**: Speedup of uneven split over even split. Darker green indicates larger improvements.
+
+The speedup increases with both sequence length and heterogeneity, reaching **4.4x at 65K tokens with 10% MPS**.
+
+---
+
+### Extreme Heterogeneity Performance
+
+![Extreme Heterogeneity](latex/images/extreme_heterogeneity.png)
+
+**Figure 3**: Absolute latency at 10% MPS (extreme heterogeneity).
+
+At extreme heterogeneity:
+- **Even split**: Over 6 seconds for 65K tokens
+- **Uneven split**: Under 1.4 seconds for 65K tokens
+- Adaptive strategies reduce latency by up to **4.4x**
+
+---
+
+### Efficiency Comparison
+
+![Efficiency vs Heterogeneity](latex/images/efficiency_vs_heterogeneity.png)
+
+**Figure 4**: Efficiency relative to homogeneous baseline across MPS configurations.
+
+**Key Observations**:
+- Even split efficiency drops below **20%** at severe heterogeneity (over 80% of potential performance lost to waiting)
+- Adaptive strategies maintain **40-50% efficiency** even at 10% MPS
+- This represents a **2-3x improvement** in resource utilization
+
+---
+
+### Summary of Findings
+
+| Finding | Details |
+|---------|---------|
+| Heterogeneity Impact | Even partitioning causes **>5x slowdown** at 10:1 capability ratios |
+| Best Strategy | Simple proportional (uneven) split achieves up to **4.4x speedup** over even split |
+| Complex Strategies | LUT and formula provide marginal benefit with added complexity |
+| Efficiency Recovery | Adaptive strategies recover **2-3x** more resource utilization |
+
+---
+
+## Repository Structure
+
+```
+.
+├── fms/                          # Modified IBM FMS source
+│   ├── distributed/
+│   │   ├── ring_attention.py     # Core ring attention implementation
+│   │   ├── strategy.py           # RingAttentionStrategy class
+│   │   └── triton_block.py       # Custom Triton kernel
+│   └── models/
+│       ├── __init__.py           # Strategy registration
+│       └── llama.py              # LLaMA model modifications
+├── hpml_testing/                 # Benchmarking scripts
+│   ├── benchmark_hetero_latency.py
+│   ├── run_hetero_benchmark.sh
+│   └── plots/                    # Generated figures
+├── latex/                        # Paper source and figures
+│   ├── report.tex
+│   └── images/
+└── demo.sh                       # Quick demo script
+```
