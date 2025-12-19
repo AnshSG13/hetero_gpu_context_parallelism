@@ -144,63 +144,61 @@ def _ring_attention_pass_kv(
     use_cache: bool = False,
     causal: bool = False,
 ):
-      """
-      Ring attention for prefill using pass-KV strategy.
-      KV tensors rotate around the ring while Q stays local.
-      """
-      batch_size, num_valid_tokens_input_shard, emb_dim = x_norm.shape
-    #   assert num_valid_tokens_input_shard == valid_len
-    #   current_rank_token_global_start_idx = strategy.rank * strategy.block_size
+    """
+    Ring attention for prefill using pass-KV strategy.
+    KV tensors rotate around the ring while Q stays local.
+    """
+    batch_size, num_valid_tokens_input_shard, emb_dim = x_norm.shape
 
-      # in hetero:
-      assert num_valid_tokens_input_shard == strategy.local_q_len
-      current_rank_token_global_start_idx = strategy.local_q_start
-      valid_len = strategy.local_q_len
+    # in hetero:
+    assert num_valid_tokens_input_shard == strategy.local_q_len
+    current_rank_token_global_start_idx = strategy.local_q_start
+    valid_len = strategy.local_q_len
 
-      # slice to valid length to be safe
-      current_rank_input_slice = x_norm[:, :valid_len]
+    # slice to valid length to be safe
+    current_rank_input_slice = x_norm[:, :valid_len]
 
-      # compute position ids for the current tokens
-      if position_ids is not None:
-          position_ids_for_rope_computation = position_ids[:, current_rank_token_global_start_idx : current_rank_token_global_start_idx +valid_len]
-      elif valid_len > 0:
-          position_ids_for_rope_computation = torch.arange(
-              current_rank_token_global_start_idx,
-              current_rank_token_global_start_idx + valid_len,
-              device=x_norm.device
-          ).unsqueeze(0).expand(batch_size, -1)
-      else:
-          position_ids_for_rope_computation = None
+    # compute position ids for the current tokens
+    if position_ids is not None:
+        position_ids_for_rope_computation = position_ids[:, current_rank_token_global_start_idx:current_rank_token_global_start_idx + valid_len]
+    elif valid_len > 0:
+        position_ids_for_rope_computation = torch.arange(
+            current_rank_token_global_start_idx,
+            current_rank_token_global_start_idx + valid_len,
+            device=x_norm.device
+        ).unsqueeze(0).expand(batch_size, -1)
+    else:
+        position_ids_for_rope_computation = None
 
-      # compute QKV + RoPE for new tokens
-      if valid_len:
-          q, k, v = _compute_qkv_and_rope(
-              attn_module, current_rank_input_slice, position_ids_for_rope_computation
-          )
-      else:
-          nheads, emb_kq_per_head, emb_v_per_head = attn_module.nheads, attn_module.emb_kq_per_head, attn_module.emb_v_per_head
-          q = k = torch.empty((batch_size, nheads, 0, emb_kq_per_head), device=x_norm.device, dtype=x_norm.dtype)
-          v = torch.empty((batch_size, nheads, 0, emb_v_per_head), device=x_norm.device, dtype=x_norm.dtype)
+    # compute QKV + RoPE for new tokens
+    if valid_len:
+        q, k, v = _compute_qkv_and_rope(
+            attn_module, current_rank_input_slice, position_ids_for_rope_computation
+        )
+    else:
+        nheads, emb_kq_per_head, emb_v_per_head = attn_module.nheads, attn_module.emb_kq_per_head, attn_module.emb_v_per_head
+        q = k = torch.empty((batch_size, nheads, 0, emb_kq_per_head), device=x_norm.device, dtype=x_norm.dtype)
+        v = torch.empty((batch_size, nheads, 0, emb_v_per_head), device=x_norm.device, dtype=x_norm.dtype)
 
-      scale = attn_module.scale_factor or math.sqrt(attn_module.emb_kq_per_head)
-      accum_dtype = torch.float32
+    scale = attn_module.scale_factor or math.sqrt(attn_module.emb_kq_per_head)
+    accum_dtype = torch.float32
 
-      # main ring attention with pass-KV
-      out = _compute_attention_ring_pass_kv(
-          q, k, v, mask, strategy, current_rank_token_global_start_idx, valid_len, scale, accum_dtype, causal
-      )
+    # main ring attention with pass-KV
+    out = _compute_attention_ring_pass_kv(
+        q, k, v, mask, strategy, current_rank_token_global_start_idx, valid_len, scale, accum_dtype, causal
+    )
 
-      if valid_len:
-          proj = out.transpose(1, 2).reshape(batch_size, valid_len, -1)
-          out = attn_module.dense(proj)
-      else:
-          out = torch.empty((batch_size, 0, emb_dim), device=x_norm.device, dtype=x_norm.dtype)
+    if valid_len:
+        proj = out.transpose(1, 2).reshape(batch_size, valid_len, -1)
+        out = attn_module.dense(proj)
+    else:
+        out = torch.empty((batch_size, 0, emb_dim), device=x_norm.device, dtype=x_norm.dtype)
 
-      # Return cache if requested
-      if use_cache:
-          return out, (k, v)
-      else:
-          return out
+    # Return cache if requested
+    if use_cache:
+        return out, (k, v)
+    else:
+        return out
 
 
 def _compute_qkv_and_rope(
@@ -444,12 +442,10 @@ def _compute_attention_ring_pass_kv(
             # Default stream waits for comm before using received tensors
             if sync_event is not None:
                 torch.cuda.current_stream().wait_event(sync_event)
-            
-            # Slice to valid length (
+
+            # Slice to valid length
             cur_k = cur_k[:, :, :cur_len].contiguous()
             cur_v = cur_v[:, :, :cur_len].contiguous()
-            cur_k, cur_v = cur_k.to(accum_dtype), cur_v.to(accum_dtype)
-
             cur_k, cur_v = cur_k.to(accum_dtype), cur_v.to(accum_dtype)
 
     # Synchronize and compute timing from CUDA events

@@ -135,7 +135,7 @@ def _offdiag_block_stats_kernel(
         beta = tl.exp(m_tile - new_m)
 
         z = z * alpha[:, None] + z_tile * beta[:, None]
-        l = l_acc * alpha + l_tile * beta
+        l_acc = l_acc * alpha + l_tile * beta
         m = new_m
 
     # Write back: Z[b,h,q,:], M[b,h,q], L[b,h,q]
@@ -178,7 +178,6 @@ def block_softmax_stats_triton(
     block_q: int = 32,
     block_k: int = 64,
 ):
-    print("Entering triton kernel")
     assert Q.is_cuda and K.is_cuda and V.is_cuda
     B, H, Q_len, D_k = Q.shape
     _, _, K_len, D_v = V.shape
@@ -223,7 +222,6 @@ def block_softmax_stats_triton(
         num_warps=4,
         num_stages=1,
     )
-    print("heRE4")
     # add last dim for l/m to match [B,H,Q,1]
     l_block = l_block.unsqueeze(-1).squeeze(-1)  # already [B,H,Q,1]
     m_block = m_block.unsqueeze(-1).squeeze(-1)  # already [B,H,Q,1]
