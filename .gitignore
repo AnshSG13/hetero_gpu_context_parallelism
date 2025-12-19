@@ -17,3 +17,13 @@ logs/.DS_Store
 logs/*
 .DS_Store
 wandb/
+
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.blg
+*.log
+*.out
+*.toc
+*.synctex.gz
+latex/*.pdf
