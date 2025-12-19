@@ -29,21 +29,34 @@ This project:
 ## Dependencies and Environment Setup
 
 ### System Requirements
-- OS: Linux (recommended)
-- GPUs: NVIDIA GPUs with P2P support (tested on L40)
-- CUDA: `>= 12.x`
-- Python: `>= 3.11`
+- **OS:** Linux (required for distributed training)
+- **Python:** 3.11 recommended for best performance
+- **CUDA:** >= 12.1
+- **PyTorch:** >= 2.1
+- **GPUs:** 2+ NVIDIA GPUs with P2P support
 
-### Core Dependencies
-```txt
-torch
-triton
-numpy
-pandas
-matplotlib
-scikit-learn
-wandb
-ibm-fms
+### Installation
+
+**1. Clone the repository:**
+```bash
+git clone https://github.com/AnshSG13/hetero_gpu_context_parallelism.git
+cd hetero_gpu_context_parallelism
+```
+
+**2. Install PyTorch with CUDA (if not already installed):**
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+```
+> **Note:** This step ensures GPU support. If you skip this, `pip install -e .` may install CPU-only PyTorch.
+
+**3. Install the package:**
+```bash
+pip install -e .
+```
+
+**4. Install additional dependencies for benchmarking:**
+```bash
+pip install triton numpy pandas matplotlib scikit-learn wandb
 ```
 
 ## Experiment Tracking
