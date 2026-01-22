@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -p gpu-preempt
-#SBATCH -t 0:45:00
+#SBATCH -t 0:10:00
 #SBATCH --gpus-per-node=2
 #SBATCH --constraint=a100
 #SBATCH --mem=26G

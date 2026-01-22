@@ -21,15 +21,15 @@ from fms.modules.attention import MultiHeadAttention
 from fms.distributed.strategy import RingAttentionStrategy
 
 # Use Triton only when block size is big enough (Q_len*K_len)
-_TRITON_MIN_WORK = 2048
-# 4096000000000, 16384
+_TRITON_MIN_WORK = 4096000000000
+# 4096000000000, 16384, 2048
 try:
     from .triton_block import block_softmax_stats_triton
     _HAS_TRITON = True
 except ImportError as e:
     print("[Triton IMPORT ERROR]", e)
     _HAS_TRITON = False
-
+_HAS_TRITON = False 
 # Global state for profiling
 _layer_call_counter = 0
 _printed_stream_info = False
@@ -365,10 +365,13 @@ def _compute_attention_ring_pass_kv(
         _print_stream_info(strategy)
 
     # DEBUG: Test if Triton works without NCCL communication
-    _DEBUG_DISABLE_COMM = False  # Set to True to test Triton without comm
+    _DEBUG_DISABLE_COMM = True  # Set to True to test Triton without comm
+
+    print(f"[Rank {strategy.rank}] Layer {current_layer}: ENTER ring loop", flush=True)
 
     # Main Ring Loop
     for i in range(strategy.world_size):
+        print(f"[Rank {strategy.rank}] Layer {current_layer}, iter {i}: START", flush=True)
         # 1. Start async comm for next iteration (overlaps with compute)
         comm_start_event = None
         reqs, recv_k, recv_v, recv_len = None, None, None, None
@@ -415,11 +418,13 @@ def _compute_attention_ring_pass_kv(
                         mask_slice = mask[..., m_q_start:m_q_end, m_k_start:m_k_end]
 
                 # This ensures consistent timing and math across all ranks
+                print(f"[Rank {strategy.rank}] Layer {current_layer}, iter {i}: BEFORE _block_softmax_stats", flush=True)
                 z_block, l_block, m_block = _block_softmax_stats(
                     q_cast, cur_k, cur_v,
                     query_indices, key_indices,
                     scale, mask_slice, causal
                 )
+                print(f"[Rank {strategy.rank}] Layer {current_layer}, iter {i}: AFTER _block_softmax_stats", flush=True)
 
                 # Merge this block's stats into the global accumulator
                 numerator, denominator, max_score = _online_softmax_merge_stats(
@@ -441,6 +446,8 @@ def _compute_attention_ring_pass_kv(
                 diag_compute_events.append((compute_start, compute_end))
             elif did_offdiag_compute:
                 offdiag_compute_events.append((compute_start, compute_end))
+
+        print(f"[Rank {strategy.rank}] Layer {current_layer}, iter {i}: END", flush=True)
 
         # 4. Wait for comm and get new K,V for next iteration
         if i < strategy.world_size - 1 and not _DEBUG_DISABLE_COMM:
@@ -464,8 +471,10 @@ def _compute_attention_ring_pass_kv(
             cur_v = cur_v[:, :, :cur_len].contiguous()
             cur_k, cur_v = cur_k.to(accum_dtype), cur_v.to(accum_dtype)
 
+    print(f"[Rank {strategy.rank}] Layer {current_layer}: BEFORE synchronize", flush=True)
     # Synchronize and compute timing from CUDA events
     torch.cuda.synchronize()
+    print(f"[Rank {strategy.rank}] Layer {current_layer}: AFTER synchronize", flush=True)
 
     # Calculate actual times from CUDA events
     total_comm_time_ms = 0.0

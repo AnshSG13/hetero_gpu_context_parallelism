@@ -94,8 +94,14 @@ def run_benchmark(model, input_ids, num_decode, label, device, is_ring=False):
     print0("Warmup pass")
     with torch.no_grad():
         _ = model.forward(ids, use_cache=False)
+    print("passed synchronize1")
     if device.type == "cuda":
         torch.cuda.synchronize()
+
+    # Barrier to ensure all ranks finish warmup before starting timed run
+    if is_ring and dist.is_initialized():
+        dist.barrier()
+
     if is_ring:
         reset_layer_counter()
     print0("Warmup done, starting timed run")
@@ -108,6 +114,7 @@ def run_benchmark(model, input_ids, num_decode, label, device, is_ring=False):
     out = model.forward(ids, use_cache=True)
     if device.type == "cuda":
         torch.cuda.synchronize()
+    (print('passed synchronize2'))
     ttft_ms = (time.perf_counter() - t0) * 1000
 
     logits, cache = (out[0], out[1]) if isinstance(out, tuple) else (out.logits, out.past_key_value_states)
