@@ -1,0 +1,156 @@
+Loading conda version miniforge3-24.7.1
+Loading cuda version 12.6
+CUDA_VISIBLE_DEVICES: 0,1
+Wed Jan 28 02:20:40 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 570.195.03             Driver Version: 570.195.03     CUDA Version: 12.8     |
+|-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA A16                     On  |   00000000:C6:00.0 Off |                    0 |
+|  0%   42C    P0             21W /   62W |      34MiB /  15356MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+|   1  NVIDIA A16                     On  |   00000000:C7:00.0 Off |                    0 |
+|  0%   38C    P8             17W /   62W |      34MiB /  15356MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+                                                                                         
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A         2905334      C   nvidia-cuda-mps-server                   28MiB |
+|    1   N/A  N/A         2905334      C   nvidia-cuda-mps-server                   28MiB |
++-----------------------------------------------------------------------------------------+
+	[4mGPU0	GPU1	CPU Affinity	NUMA Affinity	GPU NUMA ID[0m
+GPU0	 X 	PIX	34	1		N/A
+GPU1	PIX	 X 	34	1		N/A
+
+Legend:
+
+  X    = Self
+  SYS  = Connection traversing PCIe as well as the SMP interconnect between NUMA nodes (e.g., QPI/UPI)
+  NODE = Connection traversing PCIe as well as the interconnect between PCIe Host Bridges within a NUMA node
+  PHB  = Connection traversing PCIe as well as a PCIe Host Bridge (typically the CPU)
+  PXB  = Connection traversing multiple PCIe bridges (without traversing the PCIe Host Bridge)
+  PIX  = Connection traversing at most a single PCIe bridge
+  NV#  = Connection traversing a bonded set of # NVLinks
+Benchmark (Ring then Regular) - Wed Jan 28 02:20:41 AM UTC 2026
+
+tokens=256 START
+[ring] tokens=256 gpus=2
+[RING] tokens=256 gpus=2
+W0128 02:20:45.565000 2906778 site-packages/torch/distributed/run.py:803] 
+W0128 02:20:45.565000 2906778 site-packages/torch/distributed/run.py:803] *****************************************
+W0128 02:20:45.565000 2906778 site-packages/torch/distributed/run.py:803] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0128 02:20:45.565000 2906778 site-packages/torch/distributed/run.py:803] *****************************************
+[Rank 0] multiple gpus found[Rank 1] multiple gpus found
+
+[Rank 1] BEFORE init_process_group
+[Rank 0] BEFORE init_process_group
+[Rank 1] AFTER init_process_group[Rank 0] AFTER init_process_group
+[Rank 0] device=cuda:0
+SDPA backends: flash=True, mem_efficient=True, math=True
+
+[Rank 1] device=cuda:1
+[Rank 1] BEFORE broadcast ids
+[Rank 0] BEFORE broadcast ids
+[Rank 1] AFTER broadcast ids
+[Rank 1] Processing strategy: Ring
+[Rank 1] should_run=True, is_regular=False
+[Rank 1] BEFORE setup_model()
+[Rank 1] setup_model ENTER, strategy=ring
+[Rank 1] setup_model: block_lens=[128, 128]
+[Rank 1] setup_model: BEFORE models.get_model()
+[Rank 0] AFTER broadcast ids
+Benchmark: 256 prompt tokens, 0 decode tokens
+[Rank 0] Processing strategy: Ring
+[Rank 0] should_run=True, is_regular=False
+[Rank 0] BEFORE setup_model()
+[Rank 0] setup_model ENTER, strategy=ring
+[Rank 0] setup_model: block_lens=[128, 128]
+[Rank 0] setup_model: BEFORE models.get_model()
+[Rank 1] using ring attention[Rank 0] using ring attention
+[Rank 0] Creating RingAttentionStrategy...
+[Rank 0] RingAttentionStrategy created
+[Rank 0] BEFORE _get_model_instance()
+
+[Rank 1] Creating RingAttentionStrategy...
+[Rank 1] RingAttentionStrategy created
+[Rank 1] BEFORE _get_model_instance()
+[Rank 1] AFTER _get_model_instance()[Rank 0] AFTER _get_model_instance()
+[Rank 1] BEFORE post-model instantiation loop
+[Rank 1] AFTER post-model instantiation loop
+[Rank 0] BEFORE post-model instantiation loop
+[Rank 0] AFTER post-model instantiation loop
+[Rank 0] BEFORE model_wrap (pre_load=False)
+[Rank 0] AFTER model_wrap
+[Rank 0] BEFORE load_state_dict_into_model (lazy_sd has 146 keys)
+
+[Rank 1] BEFORE model_wrap (pre_load=False)
+[Rank 1] AFTER model_wrap
+[Rank 1] BEFORE load_state_dict_into_model (lazy_sd has 146 keys)
+[Rank 0] AFTER load_state_dict_into_model[Rank 1] AFTER load_state_dict_into_model
+[Rank 0] BEFORE post_init
+
+[Rank 1] BEFORE post_init
+[Rank 0] AFTER post_init, model loading COMPLETE
+[Rank 0] setup_model: AFTER models.get_model()
+[Rank 0] setup_model EXIT
+[Rank 0] AFTER setup_model()
+[Rank 0] BARRIER after model load
+[Rank 0] CUDA synced before barrier
+/work/pi_jaimedavila_umass_edu/asadhgauri_umass_edu/.conda/envs/context_parallelism/lib/python3.11/site-packages/torch/distributed/distributed_c10d.py:4876: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  warnings.warn(  # warn only once
+[Rank 1] AFTER post_init, model loading COMPLETE
+[Rank 1] setup_model: AFTER models.get_model()
+[Rank 1] setup_model EXIT
+[Rank 1] AFTER setup_model()
+[Rank 1] BARRIER after model load
+[Rank 1] CUDA synced before barrier
+[Rank 0] PASSED barrier after model load
+[Rank 0] is_ring=True, about to call run_benchmark
+[Rank 0] BEFORE run_benchmark()
+[Rank 0] run_benchmark ENTER, label=Ring, is_ring=True
+[Rank 0] run_benchmark: ids.shape=torch.Size([1, 256]), device=cuda:0
+[Rank 0] run_benchmark: BEFORE model.forward()
+[Rank 0] shard_input ENTER, x.shape=torch.Size([1, 256, 2048])
+[Rank 0] shard_input: start=0, length=128, valid_len=128
+[Rank 0] shard_input EXIT, result.shape=torch.Size([1, 128, 2048])
+[Rank 0] ring_forward ENTER, x.shape=torch.Size([1, 128, 2048])
+[Rank 0] ring_forward: LayerNorm done
+[Rank 0] ring_forward: calling ring_attention()
+[Rank 0] ring_attention ENTER, x_norm.shape=torch.Size([1, 128, 2048])
+[Rank 0] ring_attention: is_decode=False, use_cache=True
+[Rank 0] _ring_attention_pass_kv ENTER
+[Rank 0] _ring_attention_pass_kv: batch=1, tokens=128, emb=2048
+[Rank 0] _ring_attention_pass_kv: valid_len=128, q_start=0
+[Rank 0] _ring_attention_pass_kv: calling _compute_qkv_and_rope()
+[Device 0] _compute_qkv_and_rope ENTER, x.shape=torch.Size([1, 128, 2048])
+[Device 0] _compute_qkv_and_rope: calling in_proj()
+[Device 0] _compute_qkv_and_rope: in_proj done
+[Device 0] _compute_qkv_and_rope: applying RoPE
+[Device 0] _compute_qkv_and_rope: RoPE done
+[Device 0] _compute_qkv_and_rope EXIT
+[Rank 0] _ring_attention_pass_kv: QKV done, q.shape=torch.Size([1, 32, 128, 64])
+[Rank 0] _ring_attention_pass_kv: calling _compute_attention_ring_pass_kv()
+[Ring Attention] Using separate streams: True
+[Rank 0] Layer 1: ENTER ring loop
+[Rank 0] Layer 1, iter 0: START
+[Rank 0] ring_shift_kv_async ENTER, iter=0, valid_len=128
+[Rank 0] ring_shift_kv_async: send_to=1, recv_from=1
+[Rank 0] ring_shift_kv_async: buffers ready, send_k.shape=torch.Size([1, 32, 128, 64])
+[Rank 0] ring_shift_kv_async: BEFORE batch_isend_irecv
+[rank1]:[E128 02:30:56.774334144 ProcessGroupNCCL.cpp:683] [Rank 1] Watchdog caught collective operation timeout: WorkNCCL(SeqNum=2, OpType=ALLREDUCE, NumelIn=1, NumelOut=1, Timeout(ms)=600000) ran for 600095 milliseconds before timing out.
+[rank1]:[E128 02:30:56.774688261 ProcessGroupNCCL.cpp:2241] [PG ID 0 PG GUID 0(default_pg) Rank 1]  failure detected by watchdog at work sequence id: 2 PG status: last enqueued work: 2, last completed work: 1
+[rank1]:[E128 02:30:56.774714821 ProcessGroupNCCL.cpp:730] Stack trace of the failed collective not found, potentially because FlightRecorder is disabled. You can enable it by setting TORCH_NCCL_TRACE_BUFFER_SIZE to a non-zero value.
+[rank1]:[E128 02:30:56.774792328 ProcessGroupNCCL.cpp:2573] [PG ID 0 PG GUID 0(default_pg) Rank 1] First PG on this rank to signal dumping.
+[rank1]:[E128 02:30:56.908339946 ProcessGroupNCCL.cpp:1858] [PG ID 0 PG GUID 0(default_pg) Rank 1] Received a dump signal due to a collective timeout from this local rank and we will try our best to dump the debug info. Last enqueued NCCL work: 2, last completed NCCL work: 1.This is most likely caused by incorrect usages of collectives, e.g., wrong sizes used across ranks, the order of collectives is not same for all ranks or the scheduled collective, for some reason, didn't run. Additionally, this can be caused by GIL deadlock or other reasons such as network errors or bugs in the communications library (e.g. NCCL), etc. 
+[rank0]:[E128 02:30:56.908541581 ProcessGroupNCCL.cpp:1794] [PG ID 0 PG GUID 0(default_pg) Rank 0] Observed flight recorder dump signal from another rank via TCPStore.
+[rank0]:[E128 02:30:56.908669776 ProcessGroupNCCL.cpp:1858] [PG ID 0 PG GUID 0(default_pg) Rank 0] Received a dump signal due to a collective timeout from  rank 1 and we will try our best to dump the debug info. Last enqueued NCCL work: 2, last completed NCCL work: 2.This is most likely caused by incorrect usages of collectives, e.g., wrong sizes used across ranks, the order of collectives is not same for all ranks or the scheduled collective, for some reason, didn't run. Additionally, this can be caused by GIL deadlock or other reasons such as network errors or bugs in the communications library (e.g. NCCL), etc. 
+[rank1]:[E128 02:30:56.908976771 ProcessGroupNCCL.cpp:1575] [PG ID 0 PG GUID 0(default_pg) Rank 1] ProcessGroupNCCL preparing to dump debug info. Include stack trace: 1
+[rank0]:[E128 02:30:56.909297246 ProcessGroupNCCL.cpp:1575] [PG ID 0 PG GUID 0(default_pg) Rank 0] ProcessGroupNCCL preparing to dump debug info. Include stack trace: 1

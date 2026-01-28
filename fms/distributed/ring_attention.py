@@ -52,9 +52,14 @@ def ring_forward(
     attn_algorithm=None
 ):
     """LLaMABlock forward pass using ring attention instead of standard attention."""
+    _rank = self.distributed_strategy.rank if hasattr(self.distributed_strategy, 'rank') else 0
+    print(f"[Rank {_rank}] ring_forward ENTER, x.shape={x.shape}", flush=True)
+
     residual = x
     x_norm = self.ln(x)
+    print(f"[Rank {_rank}] ring_forward: LayerNorm done", flush=True)
 
+    print(f"[Rank {_rank}] ring_forward: calling ring_attention()", flush=True)
     attn_output = ring_attention(
         x_norm=x_norm,
         attn_module=self.attn,
@@ -104,10 +109,12 @@ def ring_attention(
     Distributed ring attention with heterogeneous partitioning.
     KV tensors rotate around the ring while Q stays local.
     """
+    print(f"[Rank {strategy.rank}] ring_attention ENTER, x_norm.shape={x_norm.shape}", flush=True)
     batch_size, num_valid_tokens_input_shard, emb_dim = x_norm.shape
 
     #decode check
     is_decode = (use_cache and past_key_value_state is not None and past_key_value_state[0].numel() > 0)
+    print(f"[Rank {strategy.rank}] ring_attention: is_decode={is_decode}, use_cache={use_cache}", flush=True)
 
     if is_decode:
         return _ring_attention_pass_q(
@@ -164,12 +171,15 @@ def _ring_attention_pass_kv(
     Ring attention for prefill using pass-KV strategy.
     KV tensors rotate around the ring while Q stays local.
     """
+    print(f"[Rank {strategy.rank}] _ring_attention_pass_kv ENTER", flush=True)
     batch_size, num_valid_tokens_input_shard, emb_dim = x_norm.shape
+    print(f"[Rank {strategy.rank}] _ring_attention_pass_kv: batch={batch_size}, tokens={num_valid_tokens_input_shard}, emb={emb_dim}", flush=True)
 
     # in hetero:
     assert num_valid_tokens_input_shard == strategy.local_q_len
     current_rank_token_global_start_idx = strategy.local_q_start
     valid_len = strategy.local_q_len
+    print(f"[Rank {strategy.rank}] _ring_attention_pass_kv: valid_len={valid_len}, q_start={current_rank_token_global_start_idx}", flush=True)
 
     # slice to valid length to be safe
     current_rank_input_slice = x_norm[:, :valid_len]
@@ -186,11 +196,13 @@ def _ring_attention_pass_kv(
     else:
         position_ids_for_rope_computation = None
 
+    print(f"[Rank {strategy.rank}] _ring_attention_pass_kv: calling _compute_qkv_and_rope()", flush=True)
     # compute QKV + RoPE for new tokens
     if valid_len:
         q, k, v = _compute_qkv_and_rope(
             attn_module, current_rank_input_slice, position_ids_for_rope_computation
         )
+        print(f"[Rank {strategy.rank}] _ring_attention_pass_kv: QKV done, q.shape={q.shape}", flush=True)
     else:
         nheads, emb_kq_per_head, emb_v_per_head = attn_module.nheads, attn_module.emb_kq_per_head, attn_module.emb_v_per_head
         q = k = torch.empty((batch_size, nheads, 0, emb_kq_per_head), device=x_norm.device, dtype=x_norm.dtype)
@@ -199,10 +211,13 @@ def _ring_attention_pass_kv(
     scale = attn_module.scale_factor or math.sqrt(attn_module.emb_kq_per_head)
     accum_dtype = torch.float32
 
+    # DEBUG barrier removed - debugging at benchmark level instead
+    print(f"[Rank {strategy.rank}] _ring_attention_pass_kv: calling _compute_attention_ring_pass_kv()", flush=True)
     # main ring attention with pass-KV
     out = _compute_attention_ring_pass_kv(
         q, k, v, mask, strategy, current_rank_token_global_start_idx, valid_len, scale, accum_dtype, causal
     )
+    print(f"[Rank {strategy.rank}] _ring_attention_pass_kv: ring loop DONE, out.shape={out.shape}", flush=True)
 
     if valid_len:
         proj = out.transpose(1, 2).reshape(batch_size, valid_len, -1)
@@ -222,8 +237,15 @@ def _compute_qkv_and_rope(
     x: Tensor,
     rope_position_ids: Optional[Tensor]
 ) -> Tuple[Tensor, Tensor, Tensor]:
+    # Note: We don't have strategy here, so we use device index as proxy for rank
+    _device_idx = x.device.index if x.device.type == 'cuda' else 0
+    print(f"[Device {_device_idx}] _compute_qkv_and_rope ENTER, x.shape={x.shape}", flush=True)
+
     batch_size, seq_len, _ = x.shape # x is current_rank_input_slice, so seq_len is valid_len for this rank
+    print(f"[Device {_device_idx}] _compute_qkv_and_rope: calling in_proj()", flush=True)
     q_proj, k_proj, v_proj = attn.in_proj(x, None, None)
+    print(f"[Device {_device_idx}] _compute_qkv_and_rope: in_proj done", flush=True)
+
     nheads, kvheads = attn.nheads, attn.kvheads
     emb_kq_per_head, emb_v_per_head = attn.emb_kq_per_head, attn.emb_v_per_head
 
@@ -232,18 +254,21 @@ def _compute_qkv_and_rope(
     k = k_proj.view(batch_size, seq_len, kvheads, emb_kq_per_head)
     v = v_proj.view(batch_size, seq_len, kvheads, emb_v_per_head)
     if attn.position_encoder and seq_len:
+        print(f"[Device {_device_idx}] _compute_qkv_and_rope: applying RoPE", flush=True)
         assert rope_position_ids is not None
         valid_rope_pos_mask = rope_position_ids.ne(-1)
         if valid_rope_pos_mask.any():
             rope_internal_max_seq_len = getattr(attn.position_encoder, "max_seq_len", 2048)
             clamped_rope_ids = rope_position_ids.clamp(0, rope_internal_max_seq_len - 1)
             q, k = attn.position_encoder.adjusted_qk(q, k, clamped_rope_ids, past_kv_state=None)
+        print(f"[Device {_device_idx}] _compute_qkv_and_rope: RoPE done", flush=True)
 
     q, k, v = [x_tensor.permute(0, 2, 1, 3) for x_tensor in (q, k, v)]
     if nheads != kvheads:
         kv_to_q_head_ratio = nheads // kvheads
         k = k.repeat_interleave(kv_to_q_head_ratio, dim=1)
         v = v.repeat_interleave(kv_to_q_head_ratio, dim=1)
+    print(f"[Device {_device_idx}] _compute_qkv_and_rope EXIT", flush=True)
     return q, k, v
 
 
@@ -364,8 +389,8 @@ def _compute_attention_ring_pass_kv(
         _printed_stream_info = True
         _print_stream_info(strategy)
 
-    # DEBUG: Test if Triton works without NCCL communication
-    _DEBUG_DISABLE_COMM = True  # Set to True to test Triton without comm
+    # flag to disable comm for debugging
+    _DEBUG_DISABLE_COMM = False  
 
     print(f"[Rank {strategy.rank}] Layer {current_layer}: ENTER ring loop", flush=True)
 

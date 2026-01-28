@@ -146,7 +146,9 @@ def run_benchmark(model, input_ids, num_decode, device, block_lens):
     print0("Warmup pass...")
     with torch.no_grad():
         _ = model.forward(ids, use_cache=False)
+    print("forward call works")
     torch.cuda.synchronize()
+    print('synchronize works')
     reset_layer_counter()
     print0("Warmup done")
 

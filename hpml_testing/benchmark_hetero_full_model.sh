@@ -8,6 +8,9 @@ module load conda/latest
 conda activate context_parallelism
 module load cuda/12.6
 
+# export NCCL_DEBUG=INFO
+# export NCCL_DEBUG_SUBSYS=ALL
+# export TORCH_DISTRIBUTED_DEBUG=DETAIL
 # MPS Setup (for GPU throttling)
 export CUDA_MPS_PIPE_DIRECTORY="${CUDA_MPS_PIPE_DIRECTORY:-/tmp/mps_$USER}"
 export CUDA_MPS_LOG_DIRECTORY="${CUDA_MPS_LOG_DIRECTORY:-/tmp/mps_$USER}"

@@ -412,13 +412,16 @@ def get_model(
                 devices, _guess_num_layers(lazy_sd)
             )
         elif distributed_strategy == "ring":
-            print("using ring attention")
+            print(f"[Rank {rank}] using ring attention", flush=True)
             block_lens = kwargs.pop("block_lens", None)
             if block_lens is None:
                 raise ValueError("block_lens required for ring attention strategy")
+            print(f"[Rank {rank}] Creating RingAttentionStrategy...", flush=True)
             extra_args["distributed_strategy"] = RingAttentionStrategy(block_lens=block_lens,group=group)
+            print(f"[Rank {rank}] RingAttentionStrategy created", flush=True)
 
     # Create the model on meta device to allocate weights lazily
+    print(f"[Rank {rank}] BEFORE _get_model_instance()", flush=True)
     fms_model = _get_model_instance(
         architecture,
         variant,
@@ -426,9 +429,11 @@ def get_model(
         device=torch.device("meta"),
         extra_args=extra_args,
     )
+    print(f"[Rank {rank}] AFTER _get_model_instance()", flush=True)
 
     # Run post-model instantiation for layers that require their own name
     # This is usually the case for quantization strategies
+    print(f"[Rank {rank}] BEFORE post-model instantiation loop", flush=True)
     with torch.device("meta"):
         for name, module in fms_model.named_modules():
             if isinstance(module, UninitializedModule):
@@ -440,6 +445,7 @@ def get_model(
                     module.initialize(name),
                 )
                 fms_model.get_submodule(name).module_name = name
+    print(f"[Rank {rank}] AFTER post-model instantiation loop", flush=True)
 
     # Choose when to wrap and load the model weights based on the combination
     # distribution strategy and checkpoint sharding
@@ -452,10 +458,13 @@ def get_model(
             return _fsdp_wrap(model, distributed_strategy, device, rank == 0)
         return model
 
+    print(f"[Rank {rank}] BEFORE model_wrap (pre_load={pre_load})", flush=True)
     if not pre_load:
         fms_model = model_wrap(fms_model)
+    print(f"[Rank {rank}] AFTER model_wrap", flush=True)
 
     if len(lazy_sd):
+        print(f"[Rank {rank}] BEFORE load_state_dict_into_model (lazy_sd has {len(lazy_sd)} keys)", flush=True)
         serialization.load_state_dict_into_model(
             model=fms_model,
             state_dict=lazy_sd,
@@ -467,7 +476,9 @@ def get_model(
             initial_device=initial_device,
             rank=rank,
         )
+        print(f"[Rank {rank}] AFTER load_state_dict_into_model", flush=True)
     else:
+        print(f"[Rank {rank}] No lazy_sd, initializing empty model", flush=True)
         # move from meta device to real device
         if initial_device != torch.device("meta"):
             fms_model.to_empty(device=initial_device)
@@ -478,14 +489,17 @@ def get_model(
             and not is_gptq
         ):
             fms_model.reset_parameters()
+        print(f"[Rank {rank}] Model initialized", flush=True)
 
     if pre_load:
         fms_model = model_wrap(fms_model)
 
     # Call post-init to take care of post-wrapping/device-mapping initialization
     # Examples include tying weights, init Rope embeddings
+    print(f"[Rank {rank}] BEFORE post_init", flush=True)
     if getattr(fms_model, "post_init", None) and callable(fms_model.post_init):
         fms_model.post_init()
+    print(f"[Rank {rank}] AFTER post_init, model loading COMPLETE", flush=True)
 
     # Make sure any uninitialized tensors are at least moved to device
     # TODO: should we raise a warning? are uninitialized tensors ever acceptable?
