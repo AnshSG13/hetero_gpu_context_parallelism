@@ -1,3 +1,10 @@
+import debugpy
+import os
+rank = int(os.getenv("RANK", 0))
+debugpy.listen(("0.0.0.0", 5678 + rank))
+print(f"Rank {rank} waiting for debugger on port {5678 + rank}...")
+debugpy.wait_for_client()
+
 """Benchmark script for comparing Ring Attention vs Regular Attention."""
 
 import argparse
@@ -13,7 +20,6 @@ from pathlib import Path
 from fms import models
 from fms.utils import tokenizers
 from fms.distributed.strategy import NoOpStrategy
-from fms.distributed.ring_attention import reset_layer_counter, print_timing_summary
 
 SUMMARY_HEADERS = ["strategy", "prompt_tokens", "ttft_ms", "avg_decode_ms", "total_time_ms"]
 
@@ -49,18 +55,12 @@ def parse_args():
 
 def setup_model(args, strategy, dtype):
     rank = dist.get_rank() if dist.is_initialized() else 0
-    print(f"[Rank {rank}] setup_model ENTER, strategy={strategy}", flush=True)
-
     # Compute block_lens for ring attention
     block_lens = None
     if strategy == "ring" and dist.is_initialized():
         world_size = dist.get_world_size()
         local_len = args.num_tokens // world_size
         block_lens = [local_len] * world_size
-        print(f"[Rank {rank}] setup_model: block_lens={block_lens}", flush=True)
-
-    # For hf_pretrained, don't pass variant or source - let it infer from model_path
-    print(f"[Rank {rank}] setup_model: BEFORE models.get_model()", flush=True)
     if args.architecture == "hf_pretrained":
         model = models.get_model(
             args.architecture,
@@ -81,51 +81,24 @@ def setup_model(args, strategy, dtype):
             block_lens=block_lens,
             data_type=dtype
         )
-    print(f"[Rank {rank}] setup_model: AFTER models.get_model()", flush=True)
     model.eval()
     torch.set_grad_enabled(False)
-    print(f"[Rank {rank}] setup_model EXIT", flush=True)
     return model
 
 
 def run_benchmark(model, input_ids, num_decode, label, device, is_ring=False):
     """Run generation benchmark. Returns dict with timing metrics."""
     rank = dist.get_rank() if dist.is_initialized() else 0
-    print(f"[Rank {rank}] run_benchmark ENTER, label={label}, is_ring={is_ring}", flush=True)
     ids = input_ids.clone().to(device)
-    print(f"[Rank {rank}] run_benchmark: ids.shape={ids.shape}, device={ids.device}", flush=True)
-
-    # Reset layer counter for ring attention profiling (if using ring)
-    if is_ring:
-        reset_layer_counter()
-
-    # Warmup pass
-    # print0("Warmup pass")
-    # with torch.no_grad():
-    #     _ = model.forward(ids, use_cache=False)
-    # print("passed synchronize1")
-    # if device.type == "cuda":
-    #     torch.cuda.synchronize()
-
-    # # Barrier to ensure all ranks finish warmup before starting timed run
-    # if is_ring and dist.is_initialized():
-    #     dist.barrier()
-
-    # if is_ring:
-    #     reset_layer_counter()
-    # print0("Warmup done, starting timed run")
 
     if device.type == "cuda":
         torch.cuda.synchronize()
 
     # Prefill (TTFT)
-    print(f"[Rank {rank}] run_benchmark: BEFORE model.forward()", flush=True)
     t0 = time.perf_counter()
     out = model.forward(ids, use_cache=True)
-    print(f"[Rank {rank}] run_benchmark: AFTER model.forward()", flush=True)
     if device.type == "cuda":
         torch.cuda.synchronize()
-    print(f'[Rank {rank}] passed synchronize2', flush=True)
     ttft_ms = (time.perf_counter() - t0) * 1000
 
     logits, cache = (out[0], out[1]) if isinstance(out, tuple) else (out.logits, out.past_key_value_states)
@@ -148,10 +121,6 @@ def run_benchmark(model, input_ids, num_decode, label, device, is_ring=False):
     avg_decode_ms = statistics.mean(decode_times) if decode_times else 0.0
     total_time_ms = ttft_ms + sum(decode_times)
 
-    # Print ring attention timing summary
-    if is_ring:
-        print_timing_summary(rank)
-
     if rank == 0:
         print0(f"\n{label}:")
         print0(f"  TTFT: {ttft_ms:.2f} ms | Avg Decode: {avg_decode_ms:.2f} ms | Total: {total_time_ms:.2f} ms")
@@ -169,16 +138,12 @@ def main():
 
     # Initialize distributed
     if world_size > 1 and args.device_type == "cuda":
-        print(f'[Rank {rank}] multiple gpus found', flush=True)
         torch.cuda.set_device(local_rank)
         if not dist.is_initialized():
-            print(f"[Rank {rank}] BEFORE init_process_group", flush=True)
             dist.init_process_group(backend="nccl")
-            print(f"[Rank {rank}] AFTER init_process_group", flush=True)
         device = torch.device("cuda", local_rank)
     else:
         device = torch.device(args.device_type)
-    print(f'[Rank {rank}] device={device}', flush=True)
     # Disable FlashAttention if requested (for fair comparison with ring attention)
     if args.disable_flash:
         torch.backends.cuda.enable_flash_sdp(False)
@@ -201,9 +166,7 @@ def main():
 
     # Synchronize random tokens across ranks
     if world_size > 1:
-        print(f"[Rank {rank}] BEFORE broadcast ids", flush=True)
         dist.broadcast(ids, src=0)
-        print(f"[Rank {rank}] AFTER broadcast ids", flush=True)
 
     print0(f"Benchmark: {args.num_tokens} prompt tokens, {args.num_decode_tokens} decode tokens")
 
@@ -214,7 +177,6 @@ def main():
 
     results = []
     for label, strategy in strategies:
-        print(f"[Rank {rank}] Processing strategy: {label}", flush=True)
         # Skip Ring if not distributed
         if strategy == "ring" and not dist.is_initialized():
             print0(f"Skipping {label} (requires distributed)")
@@ -222,69 +184,18 @@ def main():
 
         # Regular only runs on rank 0
         is_regular = strategy is NoOpStrategy
+        is_ring = (strategy == "ring")
         should_run = not (is_regular and rank != 0)
-        print(f"[Rank {rank}] should_run={should_run}, is_regular={is_regular}", flush=True)
 
+        model = None
         if should_run:
             if args.device_type == "cuda":
                 torch.cuda.empty_cache()
 
-            # Stagger model loading to avoid I/O contention
-            # Rank 0 loads first, then Rank 1
-            if dist.is_initialized() and rank > 0:
-                print(f"[Rank {rank}] Waiting for Rank 0 to load model first...", flush=True)
-                dist.barrier()
-
-            print(f"[Rank {rank}] BEFORE setup_model()", flush=True)
             model = setup_model(args, strategy, dtype)
-            print(f"[Rank {rank}] AFTER setup_model()", flush=True)
 
-            # Rank 0 signals it's done loading
-            if dist.is_initialized() and rank == 0:
-                print(f"[Rank {rank}] Model loaded, signaling other ranks...", flush=True)
-                dist.barrier()
-
-            # CRITICAL: Barrier after model loading to sync all ranks
-            # before any rank starts forward pass
-            if dist.is_initialized():
-                try:
-                    import sys
-                    print(f"[Rank {rank}] BARRIER after model load", flush=True)
-                    sys.stdout.flush(); sys.stderr.flush()
-
-                    # Force any pending CUDA errors to surface
-                    torch.cuda.synchronize()
-                    print(f"[Rank {rank}] CUDA synced, calling barrier()...", flush=True)
-                    sys.stdout.flush(); sys.stderr.flush()
-
-                    dist.barrier()
-                    print(f"[Rank {rank}] barrier() returned!", flush=True)
-                    sys.stdout.flush(); sys.stderr.flush()
-
-                    torch.cuda.synchronize()
-                    print(f"[Rank {rank}] PASSED barrier after model load", flush=True)
-                    sys.stdout.flush(); sys.stderr.flush()
-
-                except Exception as e:
-                    print(f"[Rank {rank}] EXCEPTION at barrier: {e}", flush=True)
-                    import traceback
-                    traceback.print_exc()
-                    raise
-
-            is_ring = (strategy == "ring")
-            print(f"[Rank {rank}] is_ring={is_ring}, about to call run_benchmark", flush=True)
-            import sys; sys.stdout.flush(); sys.stderr.flush()
-
-            try:
-                print(f"[Rank {rank}] BEFORE run_benchmark()", flush=True)
-                sys.stdout.flush(); sys.stderr.flush()
-                result = run_benchmark(model, ids, args.num_decode_tokens, label, device, is_ring=is_ring)
-                print(f"[Rank {rank}] AFTER run_benchmark()", flush=True)
-            except Exception as e:
-                print(f"[Rank {rank}] EXCEPTION in run_benchmark: {e}", flush=True)
-                import traceback
-                traceback.print_exc()
-                raise
+        if should_run:
+            result = run_benchmark(model, ids, args.num_decode_tokens, label, device, is_ring=is_ring)
             result["strategy"] = label
             results.append(result)
 
@@ -314,9 +225,7 @@ def main():
         print0("-" * 50)
         for r in results:
             print0(f"{r['strategy']:<10} {args.num_tokens:<8} {r['ttft_ms']:<10.2f} {r['avg_decode_ms']:<12.2f} {r['total_time_ms']:<10.2f}")
-    print("printed results")
     if world_size > 1 and dist.is_initialized():
-        print("hanging at dist.barrier()")
         dist.barrier()
 if __name__ == "__main__":
     try:

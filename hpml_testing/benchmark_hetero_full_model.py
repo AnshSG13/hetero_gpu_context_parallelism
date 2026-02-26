@@ -14,6 +14,7 @@ import gc
 import torch
 import torch.distributed as dist
 from pathlib import Path
+import pandas as pd
 
 from fms import models
 from fms.distributed.strategy import NoOpStrategy
@@ -86,7 +87,6 @@ def compute_block_lens(args, world_size):
         if not args.use_perf_profile:
             raise ValueError("--use-perf-profile required for 'lut' split")
 
-        import pandas as pd
         rank_mps_list = [float(p) for p in args.rank_mps.split(',')]
         if len(rank_mps_list) != world_size:
             raise ValueError(f"rank-mps has {len(rank_mps_list)} values but world_size is {world_size}")
