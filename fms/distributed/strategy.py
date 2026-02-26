@@ -226,37 +226,25 @@ class RingAttentionStrategy(DistributedStrategy):
     def _distribute_layer(self, block: nn.Module, layer: int) -> nn.Module:
         return block
 
-    def shard_input(self, x: torch.Tensor) -> torch.Tensor:
-        print(f"[Rank {self.rank}] shard_input ENTER, x.shape={x.shape}", flush=True)
-        seq_len = x.size(1)
-        self._original_seq_len = seq_len
+    def shard_input(self, x: torch.Tensor) -> torch.Tensor:                                                                                                 
+      seq_len = x.size(1)                                                                                                                                 
+      self._original_seq_len = seq_len                                                                                                                    
+                                                                                                                                                          
+      if self.world_size == 1:
+          self._local_valid_len = seq_len
+          return x
 
-        if self.world_size == 1:
-            self._local_valid_len = seq_len
-            return x
+      if self.block_size is None:
+          self.block_size = math.ceil(seq_len / self.world_size)
+      else:
+          assert self.block_size >= max(self.block_lens), (
+              f"block_size={self.block_size} < max(block_lens)={max(self.block_lens)}"
+          )
 
-        # if self.block_size is None or seq_len > self.block_size:
-        #     self.block_size = math.ceil(seq_len / self.world_size)
-        if self.block_size is None:
-            self.block_size = math.ceil(seq_len / self.world_size)
-        else:
-            # Sanity check: block_size should be >= all block_lens
-            assert self.block_size >= max(self.block_lens), (
-                f"block_size={self.block_size} < max(block_lens)={max(self.block_lens)}"
-            )
-        start = self.block_starts[self.rank]
-        length = self.block_lens[self.rank]
-        end = min(start + length, seq_len)
-        self._local_valid_len = max(0, end - start)
-        print(f"[Rank {self.rank}] shard_input: start={start}, length={length}, valid_len={self._local_valid_len}", flush=True)
-        if self._local_valid_len > 0:
-            result = x.narrow(1, start, self._local_valid_len)
-            print(f"[Rank {self.rank}] shard_input EXIT, result.shape={result.shape}", flush=True)
-            return result
-        shp = list(x.shape)
-        shp[1] = 0
-        print(f"[Rank {self.rank}] shard_input EXIT (empty)", flush=True)
-        return torch.empty(*shp, dtype=x.dtype, device=x.device)
+      start = self.block_starts[self.rank]
+      length = self.block_lens[self.rank]
+      self._local_valid_len = length
+      return x.narrow(1, start, length)
 
     def ring_shift_kv_async(
         self,
@@ -265,22 +253,23 @@ class RingAttentionStrategy(DistributedStrategy):
         valid_len: int,
         iteration: int,
         enable_timing: bool = False,
-    ) -> Tuple[Any, torch.Tensor, torch.Tensor, int, Optional[torch.cuda.Event]]:
+    ) -> Tuple[Any, Optional[torch.cuda.Event]]:
         """Start async P2P send/recv of KV tensors to next/from prev rank."""
-        print(f"[Rank {self.rank}] ring_shift_kv_async ENTER, iter={iteration}, valid_len={valid_len}", flush=True)
 
         # After iteration i, we receive from rank (self.rank - (i+1)) % world_size
         source_rank = (self.rank - (iteration + 1)) % self.world_size
         recv_len = self.block_lens[source_rank]
 
-        if self.world_size == 1:
-            return None, k, v, recv_len, None
+        if self.world_size == 1:                                                                                                                                
+            self._pending_recv_k = k                                                                                                                            
+            self._pending_recv_v = v                                                                                                                            
+            self._pending_recv_len = recv_len                                                                                                                   
+            return None, None    
 
         # Ring shift: always send to next, receive from previous
         send_to = (self.rank + 1) % self.world_size
         recv_from = (self.rank - 1 + self.world_size) % self.world_size
         seq_dim = 2
-        print(f"[Rank {self.rank}] ring_shift_kv_async: send_to={send_to}, recv_from={recv_from}", flush=True)
 
         # Slice and pad KV to block_size
         if valid_len > 0:
@@ -294,7 +283,6 @@ class RingAttentionStrategy(DistributedStrategy):
 
         recv_k = torch.empty_like(send_k)
         recv_v = torch.empty_like(send_v)
-        print(f"[Rank {self.rank}] ring_shift_kv_async: buffers ready, send_k.shape={send_k.shape}", flush=True)
 
         # Record event so comm stream waits for send buffers to be ready
         ready_event = torch.cuda.Event()
@@ -303,7 +291,6 @@ class RingAttentionStrategy(DistributedStrategy):
         # Create start timing event if requested
         comm_start_event = torch.cuda.Event(enable_timing=True) if enable_timing else None
 
-        print(f"[Rank {self.rank}] ring_shift_kv_async: BEFORE batch_isend_irecv", flush=True)
         with torch.cuda.stream(self._comm_stream):
             self._comm_stream.wait_event(ready_event)
 
@@ -318,30 +305,28 @@ class RingAttentionStrategy(DistributedStrategy):
                 P2POp(dist.irecv, recv_v, recv_from),
             ]
             reqs = dist.batch_isend_irecv(ops)
-        print(f"[Rank {self.rank}] ring_shift_kv_async: AFTER batch_isend_irecv", flush=True)
 
-        return reqs, recv_k, recv_v, recv_len, comm_start_event
+        self._pending_recv_k = recv_k
+        self._pending_recv_v = recv_v
+        self._pending_recv_len = recv_len
+        return reqs, comm_start_event
+
 
     def ring_shift_kv_wait(
         self,
         reqs: Any,
-        recv_k: torch.Tensor,
-        recv_v: torch.Tensor,
-        recv_len: int,
         enable_timing: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, int, Optional[torch.cuda.Event], Optional[torch.cuda.Event]]:
         """Wait for async KV shift to complete and return received tensors."""
-        print(f"[Rank {self.rank}] ring_shift_kv_wait ENTER", flush=True)
+        recv_k = self._pending_recv_k
+        recv_v = self._pending_recv_v
+        recv_len = self._pending_recv_len
 
         if reqs is None:
             return recv_k, recv_v, recv_len, None, None
 
-        print(f"[Rank {self.rank}] ring_shift_kv_wait: waiting for {len(reqs)} requests...", flush=True)
-        for i, req in enumerate(reqs):
-            print(f"[Rank {self.rank}] ring_shift_kv_wait: waiting req[{i}]...", flush=True)
+        for req in reqs:
             req.wait()
-            print(f"[Rank {self.rank}] ring_shift_kv_wait: req[{i}] done", flush=True)
-        print(f"[Rank {self.rank}] ring_shift_kv_wait: all requests done", flush=True)
 
         # Record events on comm stream AFTER transfers complete
         comm_end_event = None
@@ -356,7 +341,6 @@ class RingAttentionStrategy(DistributedStrategy):
         # No synchronize() needed - recv_len is already known from block_lens
         if recv_len == 0:
             return recv_k[:, :, :0], recv_v[:, :, :0], 0, comm_end_event, sync_event
-        print(f"[Rank {self.rank}] ring_shift_kv_wait EXIT", flush=True)
         return recv_k, recv_v, recv_len, comm_end_event, sync_event
  
     @property
@@ -368,18 +352,14 @@ class RingAttentionStrategy(DistributedStrategy):
       return self.block_starts[self.rank]
 
     def gather_tensor(self, tensor: torch.Tensor, dim: int = 1) -> torch.Tensor:
-        print(f"[Rank {self.rank}] gather_tensor ENTER, tensor.shape={tensor.shape}", flush=True)
         if self.world_size == 1:
             return tensor
         t = tensor.contiguous()
         if t.size(dim) != self.block_size:
             t = self._pad_to_block_size(t, dim)
         gathered = [torch.empty_like(t) for _ in range(self.world_size)]
-        print(f"[Rank {self.rank}] gather_tensor: BEFORE all_gather", flush=True)
         torch.distributed.all_gather(gathered, t, group=self.group)
-        print(f"[Rank {self.rank}] gather_tensor: AFTER all_gather", flush=True)
         result = torch.cat(gathered, dim=dim)
         if dim == 1 and self._original_seq_len is not None:
             result = result.narrow(dim, 0, self._original_seq_len)
-        print(f"[Rank {self.rank}] gather_tensor EXIT", flush=True)
         return result

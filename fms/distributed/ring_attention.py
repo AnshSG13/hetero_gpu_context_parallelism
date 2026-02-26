@@ -16,28 +16,22 @@ import math
 import torch
 from torch import Tensor
 from typing import List, Optional, Tuple
-
+from torch.nn.attention.flex_attention import (
+      flex_attention,
+      AuxRequest,
+      create_block_mask,
+  )
 from fms.modules.attention import MultiHeadAttention
 from fms.distributed.strategy import RingAttentionStrategy
 
 # Use Triton only when block size is big enough (Q_len*K_len)
 _TRITON_MIN_WORK = 4096000000000
-# 4096000000000, 16384, 2048
 try:
     from .triton_block import block_softmax_stats_triton
     _HAS_TRITON = True
-except ImportError as e:
-    print("[Triton IMPORT ERROR]", e)
+except ImportError:
     _HAS_TRITON = False
-_HAS_TRITON = False 
-# Global state for profiling
-_layer_call_counter = 0
-_printed_stream_info = False
-
-# Aggregate timing across all layers
-_total_compute_ms = 0.0
-_total_comm_ms = 0.0
-_total_bytes = 0
+_HAS_TRITON = False
 
 
 def ring_forward(
@@ -52,21 +46,16 @@ def ring_forward(
     attn_algorithm=None
 ):
     """LLaMABlock forward pass using ring attention instead of standard attention."""
-    _rank = self.distributed_strategy.rank if hasattr(self.distributed_strategy, 'rank') else 0
-    print(f"[Rank {_rank}] ring_forward ENTER, x.shape={x.shape}", flush=True)
-
     residual = x
     x_norm = self.ln(x)
-    print(f"[Rank {_rank}] ring_forward: LayerNorm done", flush=True)
 
-    print(f"[Rank {_rank}] ring_forward: calling ring_attention()", flush=True)
     attn_output = ring_attention(
         x_norm=x_norm,
         attn_module=self.attn,
         strategy=self.distributed_strategy,
         valid_len=self.distributed_strategy._local_valid_len,
         mask=mask,
-        position_ids=position_ids, # Sharded position_ids
+        position_ids=position_ids,
         past_key_value_state=past_key_value_state,
         use_cache=use_cache,
         causal=is_causal_mask,
@@ -109,12 +98,8 @@ def ring_attention(
     Distributed ring attention with heterogeneous partitioning.
     KV tensors rotate around the ring while Q stays local.
     """
-    print(f"[Rank {strategy.rank}] ring_attention ENTER, x_norm.shape={x_norm.shape}", flush=True)
-    batch_size, num_valid_tokens_input_shard, emb_dim = x_norm.shape
-
-    #decode check
+    # decode check
     is_decode = (use_cache and past_key_value_state is not None and past_key_value_state[0].numel() > 0)
-    print(f"[Rank {strategy.rank}] ring_attention: is_decode={is_decode}, use_cache={use_cache}", flush=True)
 
     if is_decode:
         return _ring_attention_pass_q(
@@ -171,15 +156,11 @@ def _ring_attention_pass_kv(
     Ring attention for prefill using pass-KV strategy.
     KV tensors rotate around the ring while Q stays local.
     """
-    print(f"[Rank {strategy.rank}] _ring_attention_pass_kv ENTER", flush=True)
     batch_size, num_valid_tokens_input_shard, emb_dim = x_norm.shape
-    print(f"[Rank {strategy.rank}] _ring_attention_pass_kv: batch={batch_size}, tokens={num_valid_tokens_input_shard}, emb={emb_dim}", flush=True)
 
-    # in hetero:
     assert num_valid_tokens_input_shard == strategy.local_q_len
     current_rank_token_global_start_idx = strategy.local_q_start
     valid_len = strategy.local_q_len
-    print(f"[Rank {strategy.rank}] _ring_attention_pass_kv: valid_len={valid_len}, q_start={current_rank_token_global_start_idx}", flush=True)
 
     # slice to valid length to be safe
     current_rank_input_slice = x_norm[:, :valid_len]
@@ -196,13 +177,11 @@ def _ring_attention_pass_kv(
     else:
         position_ids_for_rope_computation = None
 
-    print(f"[Rank {strategy.rank}] _ring_attention_pass_kv: calling _compute_qkv_and_rope()", flush=True)
     # compute QKV + RoPE for new tokens
     if valid_len:
         q, k, v = _compute_qkv_and_rope(
             attn_module, current_rank_input_slice, position_ids_for_rope_computation
         )
-        print(f"[Rank {strategy.rank}] _ring_attention_pass_kv: QKV done, q.shape={q.shape}", flush=True)
     else:
         nheads, emb_kq_per_head, emb_v_per_head = attn_module.nheads, attn_module.emb_kq_per_head, attn_module.emb_v_per_head
         q = k = torch.empty((batch_size, nheads, 0, emb_kq_per_head), device=x_norm.device, dtype=x_norm.dtype)
@@ -211,13 +190,10 @@ def _ring_attention_pass_kv(
     scale = attn_module.scale_factor or math.sqrt(attn_module.emb_kq_per_head)
     accum_dtype = torch.float32
 
-    # DEBUG barrier removed - debugging at benchmark level instead
-    print(f"[Rank {strategy.rank}] _ring_attention_pass_kv: calling _compute_attention_ring_pass_kv()", flush=True)
     # main ring attention with pass-KV
     out = _compute_attention_ring_pass_kv(
         q, k, v, mask, strategy, current_rank_token_global_start_idx, valid_len, scale, accum_dtype, causal
     )
-    print(f"[Rank {strategy.rank}] _ring_attention_pass_kv: ring loop DONE, out.shape={out.shape}", flush=True)
 
     if valid_len:
         proj = out.transpose(1, 2).reshape(batch_size, valid_len, -1)
@@ -237,14 +213,8 @@ def _compute_qkv_and_rope(
     x: Tensor,
     rope_position_ids: Optional[Tensor]
 ) -> Tuple[Tensor, Tensor, Tensor]:
-    # Note: We don't have strategy here, so we use device index as proxy for rank
-    _device_idx = x.device.index if x.device.type == 'cuda' else 0
-    print(f"[Device {_device_idx}] _compute_qkv_and_rope ENTER, x.shape={x.shape}", flush=True)
-
-    batch_size, seq_len, _ = x.shape # x is current_rank_input_slice, so seq_len is valid_len for this rank
-    print(f"[Device {_device_idx}] _compute_qkv_and_rope: calling in_proj()", flush=True)
+    batch_size, seq_len, _ = x.shape
     q_proj, k_proj, v_proj = attn.in_proj(x, None, None)
-    print(f"[Device {_device_idx}] _compute_qkv_and_rope: in_proj done", flush=True)
 
     nheads, kvheads = attn.nheads, attn.kvheads
     emb_kq_per_head, emb_v_per_head = attn.emb_kq_per_head, attn.emb_v_per_head
@@ -254,21 +224,18 @@ def _compute_qkv_and_rope(
     k = k_proj.view(batch_size, seq_len, kvheads, emb_kq_per_head)
     v = v_proj.view(batch_size, seq_len, kvheads, emb_v_per_head)
     if attn.position_encoder and seq_len:
-        print(f"[Device {_device_idx}] _compute_qkv_and_rope: applying RoPE", flush=True)
         assert rope_position_ids is not None
         valid_rope_pos_mask = rope_position_ids.ne(-1)
         if valid_rope_pos_mask.any():
             rope_internal_max_seq_len = getattr(attn.position_encoder, "max_seq_len", 2048)
             clamped_rope_ids = rope_position_ids.clamp(0, rope_internal_max_seq_len - 1)
             q, k = attn.position_encoder.adjusted_qk(q, k, clamped_rope_ids, past_kv_state=None)
-        print(f"[Device {_device_idx}] _compute_qkv_and_rope: RoPE done", flush=True)
 
     q, k, v = [x_tensor.permute(0, 2, 1, 3) for x_tensor in (q, k, v)]
     if nheads != kvheads:
         kv_to_q_head_ratio = nheads // kvheads
         k = k.repeat_interleave(kv_to_q_head_ratio, dim=1)
         v = v.repeat_interleave(kv_to_q_head_ratio, dim=1)
-    print(f"[Device {_device_idx}] _compute_qkv_and_rope EXIT", flush=True)
     return q, k, v
 
 
@@ -296,16 +263,6 @@ def _online_softmax_update(
     denominator = (denominator * correction) + exp_weights.sum(dim=-1, keepdim=True)
 
     return numerator, denominator, new_max_score
-
-
-def _print_stream_info(strategy):
-    """Print stream info once per forward pass (rank 0 only)."""
-    if strategy.rank != 0:
-        return
-
-    default_stream = torch.cuda.current_stream()
-    streams_different = strategy._comm_stream != default_stream
-    print(f"[Ring Attention] Using separate streams: {streams_different}")
 
 
 def _has_offdiag_contribution(strategy: RingAttentionStrategy, q_start: int, q_len: int, causal: bool) -> bool:
@@ -339,210 +296,92 @@ def _has_offdiag_contribution(strategy: RingAttentionStrategy, q_start: int, q_l
 
 
 def _compute_attention_ring_pass_kv(
-    q: Tensor,
-    k: Tensor,
-    v: Tensor,
-    mask: Optional[Tensor],
-    strategy: RingAttentionStrategy,
-    q_start: int,
-    num_valid_tokens: int,
-    scale: float,
-    accum_dtype: torch.dtype,
-    causal: bool,
-) -> Tensor:
-    """
-    Main ring loop: overlap async KV communication with attention compute.
-    Uses online softmax to merge results across heterogeneous shards.
-    """
-    global _layer_call_counter, _printed_stream_info, _total_compute_ms, _total_comm_ms, _total_bytes
+      q: Tensor,
+      k: Tensor,
+      v: Tensor,
+      mask: Optional[Tensor],
+      strategy: RingAttentionStrategy,
+      q_start: int,
+      num_valid_tokens: int,
+      scale: float,
+      accum_dtype: torch.dtype,
+      causal: bool,
+  ) -> Tensor:
+      B, H, _, Dv = q.shape[0], q.shape[1], q.shape[2], v.shape[-1]
 
-    batch_size, nheads, _, emb_v = q.shape[0], q.shape[1], q.shape[2], v.shape[-1]
+      # Accumulators: normalized output + logsumexp
+      out_acc = torch.zeros((B, H, num_valid_tokens, Dv), device=q.device, dtype=accum_dtype)
+      lse_acc = torch.full((B, H, num_valid_tokens, 1), float("-inf"), device=q.device, dtype=accum_dtype)
 
-    # Online softmax accumulators (FP32)
-    numerator = torch.zeros((batch_size, nheads, num_valid_tokens, emb_v), device=q.device, dtype=accum_dtype)
-    denominator = torch.zeros((batch_size, nheads, num_valid_tokens, 1), device=q.device, dtype=accum_dtype)
-    max_score = torch.full((batch_size, nheads, num_valid_tokens, 1), float("-inf"), device=q.device, dtype=accum_dtype)
+      cur_k, cur_v = k, v
+      cur_len = cur_k.shape[2]
 
-    # Cast inputs once
-    q_cast = q.to(accum_dtype)
-    cur_k, cur_v = k.to(accum_dtype), v.to(accum_dtype)
-    cur_len = cur_k.shape[2]
+      for i in range(strategy.world_size):
+          # 1. Start async comm for next iteration
+          reqs = None
+          if i < strategy.world_size - 1:
+              reqs, _ = strategy.ring_shift_kv_async(
+                  cur_k, cur_v, cur_len, iteration=i, enable_timing=False
+              )
 
-    # Global indices for causal masking
-    query_indices = torch.arange(q_start, q_start + num_valid_tokens, device=q.device)
+          # 2. Identify source block
+          source_rank = (strategy.rank - i) % strategy.world_size
+          block_offset = strategy.block_starts[source_rank]
 
-    # Timing accumulators
-    PROFILE = True
-    total_bytes_transferred = 0
-    comm_events = []  # List of (start_event, end_event) tuples
-    compute_events = []  # List of (start_event, end_event) tuples
-    diag_compute_events = []  # (start, end) for diagonal block compute
-    offdiag_compute_events = []  # (start, end) for off-diagonal block compute
+          # 3. Compute attention on current block
+          if num_valid_tokens > 0 and cur_len > 0:
+              k_start = block_offset
+              q_end = q_start + num_valid_tokens - 1
+              is_fully_masked = causal and (k_start > q_end)
 
-    # Track layer for printing
-    _layer_call_counter += 1
-    current_layer = _layer_call_counter
-    should_print = (current_layer == 1)  # Only print first layer
+              if not is_fully_masked:
+                  # Build score_mod with global index offsets for causal masking
+                  _q_off = q_start
+                  _k_off = block_offset
 
-    # Print stream info once per forward pass
-    if not _printed_stream_info:
-        _printed_stream_info = True
-        _print_stream_info(strategy)
+                  if causal:
+                      def score_mod(score, b, h, q_idx, kv_idx):
+                          return torch.where(
+                              q_idx + _q_off >= kv_idx + _k_off,
+                              score,
+                              torch.tensor(float("-inf")),
+                          )
+                  else:
+                      score_mod = None
 
-    # flag to disable comm for debugging
-    _DEBUG_DISABLE_COMM = False  
+                  # flex_attention returns normalized output + lse
+                  block_out, aux = flex_attention(
+                      q,
+                      cur_k[:, :, :cur_len].contiguous(),
+                      cur_v[:, :, :cur_len].contiguous(),
+                      score_mod=score_mod,
+                      scale=1.0 / scale, 
+                      return_aux=AuxRequest(lse=True),
+                  )
 
-    print(f"[Rank {strategy.rank}] Layer {current_layer}: ENTER ring loop", flush=True)
+                  # aux.lse shape: [B, H, Q] -> [B, H, Q, 1]
+                  block_lse = aux.lse.unsqueeze(-1).to(accum_dtype)
+                  block_out = block_out.to(accum_dtype)
 
-    # Main Ring Loop
-    for i in range(strategy.world_size):
-        print(f"[Rank {strategy.rank}] Layer {current_layer}, iter {i}: START", flush=True)
-        # 1. Start async comm for next iteration (overlaps with compute)
-        comm_start_event = None
-        reqs, recv_k, recv_v, recv_len = None, None, None, None
+                  out_acc, lse_acc = _merge_out_lse(out_acc, lse_acc, block_out, block_lse)
 
-        # Track what is being computed this iteration
-        did_diag_compute = False
-        did_offdiag_compute = False
+          # 4. Wait for comm
+          if i < strategy.world_size - 1:
+              assert reqs is not None
+              cur_k, cur_v, cur_len, _, sync_event = strategy.ring_shift_kv_wait(
+                  reqs, enable_timing=False
+              )
+              if sync_event is not None:
+                  torch.cuda.current_stream().wait_event(sync_event)
+              cur_k = cur_k[:, :, :cur_len].contiguous()
+              cur_v = cur_v[:, :, :cur_len].contiguous()
 
-        if i < strategy.world_size - 1 and not _DEBUG_DISABLE_COMM:
-            reqs, recv_k, recv_v, recv_len, comm_start_event = strategy.ring_shift_kv_async(
-                cur_k, cur_v, cur_len, iteration=i, enable_timing=PROFILE
-            )
+      torch.cuda.synchronize()
 
-        # Record compute start event on default stream
-        compute_start = torch.cuda.Event(enable_timing=True) if PROFILE else None
-        compute_end = torch.cuda.Event(enable_timing=True) if PROFILE else None
-        if compute_start:
-            compute_start.record()
+      if num_valid_tokens == 0:
+          return torch.empty((B, H, 0, Dv), device=q.device, dtype=q.dtype)
 
-        # 2. Identify block source and offset
-        source_rank = (strategy.rank - i) % strategy.world_size
-        block_offset = strategy.block_starts[source_rank]
-        is_diagonal = (i == 0)  # Diagonal block: Q and K are from same rank's tokens
-
-        # 3. Compute attention on current block using Triton
-        if num_valid_tokens > 0 and cur_len > 0:
-            k_start = block_offset
-            q_end = q_start + num_valid_tokens - 1
-
-            # Skip block ONLY if fully masked by causality
-            is_fully_masked = causal and (k_start > q_end)
-
-            if not is_fully_masked:
-                key_indices = torch.arange(block_offset, block_offset + cur_len, device=q.device)
-
-                # Correctly slice mask for this specific block [Local Q, Remote K]
-                mask_slice = None
-                if mask is not None:
-                    m_q_start = q_start
-                    m_q_end = q_start + num_valid_tokens
-                    m_k_start = block_offset
-                    m_k_end = block_offset + cur_len
-                    if mask.ndim >= 2:
-                        mask_slice = mask[..., m_q_start:m_q_end, m_k_start:m_k_end]
-
-                # This ensures consistent timing and math across all ranks
-                print(f"[Rank {strategy.rank}] Layer {current_layer}, iter {i}: BEFORE _block_softmax_stats", flush=True)
-                z_block, l_block, m_block = _block_softmax_stats(
-                    q_cast, cur_k, cur_v,
-                    query_indices, key_indices,
-                    scale, mask_slice, causal
-                )
-                print(f"[Rank {strategy.rank}] Layer {current_layer}, iter {i}: AFTER _block_softmax_stats", flush=True)
-
-                # Merge this block's stats into the global accumulator
-                numerator, denominator, max_score = _online_softmax_merge_stats(
-                    z_block, l_block, m_block,
-                    numerator, denominator, max_score
-                )
-
-                if is_diagonal:
-                    did_diag_compute = True
-                else:
-                    did_offdiag_compute = True
-
-        # Record compute end event on DEFAULT stream
-        if compute_start is not None and compute_end is not None:
-            compute_end.record()
-            compute_events.append((compute_start, compute_end))
-
-            if did_diag_compute:
-                diag_compute_events.append((compute_start, compute_end))
-            elif did_offdiag_compute:
-                offdiag_compute_events.append((compute_start, compute_end))
-
-        print(f"[Rank {strategy.rank}] Layer {current_layer}, iter {i}: END", flush=True)
-
-        # 4. Wait for comm and get new K,V for next iteration
-        if i < strategy.world_size - 1 and not _DEBUG_DISABLE_COMM:
-            assert reqs is not None and recv_k is not None and recv_v is not None and recv_len is not None
-            cur_k, cur_v, cur_len, comm_end_event, sync_event = strategy.ring_shift_kv_wait(
-                reqs, recv_k, recv_v, recv_len, enable_timing=PROFILE
-            )
-
-            if PROFILE:
-                total_bytes_transferred += cur_k.numel() * cur_k.element_size()
-                total_bytes_transferred += cur_v.numel() * cur_v.element_size()
-                if comm_start_event and comm_end_event:
-                    comm_events.append((comm_start_event, comm_end_event))
-
-            # Default stream waits for comm before using received tensors
-            if sync_event is not None:
-                torch.cuda.current_stream().wait_event(sync_event)
-
-            # Slice to valid length
-            cur_k = cur_k[:, :, :cur_len].contiguous()
-            cur_v = cur_v[:, :, :cur_len].contiguous()
-            cur_k, cur_v = cur_k.to(accum_dtype), cur_v.to(accum_dtype)
-
-    print(f"[Rank {strategy.rank}] Layer {current_layer}: BEFORE synchronize", flush=True)
-    # Synchronize and compute timing from CUDA events
-    torch.cuda.synchronize()
-    print(f"[Rank {strategy.rank}] Layer {current_layer}: AFTER synchronize", flush=True)
-
-    # Calculate actual times from CUDA events
-    total_comm_time_ms = 0.0
-    total_compute_time_ms = 0.0
-    total_offdiag_compute_ms = 0.0
-    total_diag_compute_ms = 0.0
-
-    for start_evt, end_evt in comm_events:
-        total_comm_time_ms += start_evt.elapsed_time(end_evt)
-
-    for start_evt, end_evt in compute_events:
-        total_compute_time_ms += start_evt.elapsed_time(end_evt)
-
-    for start_evt, end_evt in diag_compute_events:
-        total_diag_compute_ms += start_evt.elapsed_time(end_evt)
-
-    for start_evt, end_evt in offdiag_compute_events:
-        total_offdiag_compute_ms += start_evt.elapsed_time(end_evt)
-
-    # Accumulate timing for summary
-    global _total_compute_ms, _total_comm_ms, _total_bytes
-    _total_compute_ms += total_compute_time_ms
-    _total_comm_ms += total_comm_time_ms
-    _total_bytes += total_bytes_transferred
-
-    # Print timing (only rank 1, first layer only)
-    if PROFILE and strategy.rank == 1 and should_print:
-        comm_bandwidth_gbps = (total_bytes_transferred / 1e9) / (total_comm_time_ms / 1000) if total_comm_time_ms > 0 else 0
-
-        print(f"\n[Ring Attention layer={current_layer}] tokens={num_valid_tokens}, world_size={strategy.world_size}")
-        print(f"  comm: {total_comm_time_ms:6.2f}ms | compute: {total_compute_time_ms:6.2f}ms")
-        print(f"  diag: {total_diag_compute_ms:6.2f} ms | offdiag: {total_offdiag_compute_ms:6.4f} ms")
-        print(f"  data: {total_bytes_transferred/1e6:.2f} MB | bandwidth: {comm_bandwidth_gbps:.2f} GB/s")
-        if total_comm_time_ms < total_compute_time_ms:
-            print(f"  comm hidden behind compute")
-        else:
-            print(f"  comm is bottleneck")
-
-    if num_valid_tokens == 0:
-        return torch.empty((batch_size, nheads, 0, emb_v), device=q.device, dtype=q.dtype)
-
-    return (numerator / (denominator + 1e-8)).to(q.dtype)
-
+      return out_acc.to(q.dtype)
 def _compute_attention_ring_pass_q():
     return
 
@@ -555,8 +394,8 @@ def _attn_scores(
     mask: Optional[Tensor],
     causal: bool,
 ) -> Tensor:
-    batch_size, nheads, num_q, _ = Q.shape # num_q is num_queries_in_block for Q
-    num_k = K.shape[2]          # num_k is current_block_k_len for K
+    batch_size, nheads, num_q, _ = Q.shape
+    num_k = K.shape[2]
     if num_q == 0 or num_k == 0:
         return Q.new_empty((batch_size, nheads, num_q, num_k))
 
@@ -571,36 +410,19 @@ def _attn_scores(
     return scores
 
 
-def reset_layer_counter():
-    global _layer_call_counter, _printed_stream_info
-    global _total_compute_ms, _total_comm_ms, _total_bytes
-    _layer_call_counter = 0
-    _printed_stream_info = False
-    _total_compute_ms = 0.0
-    _total_comm_ms = 0.0
-    _total_bytes = 0
-
-
-def print_timing_summary(rank: int = 0):
-    if rank != 0:
-        return
-
-    if _total_compute_ms == 0 and _total_comm_ms == 0:
-        return
-
-    num_layers = _layer_call_counter
-    comm_bandwidth_gbps = (_total_bytes / 1e9) / (_total_comm_ms / 1000) if _total_comm_ms > 0 else 0
-
-    print(f"\n[Ring Attention Summary] {num_layers} layers")
-    print(f"  comm (total):    {_total_comm_ms:8.2f}ms")
-    print(f"  compute (total): {_total_compute_ms:8.2f}ms")
-    print(f"  data: {_total_bytes/1e6:.2f} MB | bandwidth: {comm_bandwidth_gbps:.2f} GB/s")
-    if _total_comm_ms < _total_compute_ms:
-        print(f"  comm hidden behind compute")
-    else:
-        print(f"  comm is bottleneck")
-
-
+def _merge_out_lse(
+      out_acc: Tensor,    # [B, H, Q, Dv]
+      lse_acc: Tensor,    # [B, H, Q, 1]
+      block_out: Tensor,  # [B, H, Q, Dv]
+      block_lse: Tensor,  # [B, H, Q, 1]
+  ) -> Tuple[Tensor, Tensor]:
+      """Merge two normalized attention outputs using logsumexp."""
+      new_lse = torch.logaddexp(lse_acc, block_lse)
+      out_acc = (
+          torch.exp(lse_acc - new_lse) * out_acc
+          + torch.exp(block_lse - new_lse) * block_out
+      )
+      return out_acc, new_lse
 def _online_softmax_merge_stats(
     z_block: Tensor,      # [B, H, Q, D_v]
     l_block: Tensor,      # [B, H, Q, 1]
@@ -643,7 +465,7 @@ def _block_softmax_stats_naive(
         z_block: sum_j exp(S_ij - m_block_i) * V_j
     using a naive matmul implementation.
     """
-    B, H, Q_len, Dk = Q.shape
+    B, H, Q_len, _ = Q.shape
     K_len = K.shape[2]
     Dv = V.shape[-1]
 
@@ -692,7 +514,6 @@ def _block_softmax_stats(
 ) -> Tuple[Tensor, Tensor, Tensor]:
     # Triton path
     if _HAS_TRITON and Q.is_cuda:
-        # Always use Triton path to prevent deadlock from divergent code paths on ranks
         return block_softmax_stats_triton(
             Q, K, V, query_indices, key_indices, scale, mask, causal
         )

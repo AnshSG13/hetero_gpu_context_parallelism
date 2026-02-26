@@ -1,9 +1,9 @@
 import debugpy
 import os
-rank = int(os.getenv("RANK", 0))
-debugpy.listen(("0.0.0.0", 5678 + rank))
-print(f"Rank {rank} waiting for debugger on port {5678 + rank}...")
-debugpy.wait_for_client()
+# rank = int(os.getenv("RANK", 0))
+# debugpy.listen(("0.0.0.0", 5678 + rank))
+# print(f"Rank {rank} waiting for debugger on port {5678 + rank}...")
+# debugpy.wait_for_client()
 
 """Benchmark script for comparing Ring Attention vs Regular Attention."""
 

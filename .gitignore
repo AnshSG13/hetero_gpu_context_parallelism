@@ -17,6 +17,7 @@ logs/.DS_Store
 logs/*
 .DS_Store
 wandb/
+.env
 
 # LaTeX build artifacts
 *.aux
