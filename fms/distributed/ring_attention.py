@@ -5,9 +5,8 @@ This module implements distributed ring attention for long-context LLM inference
 with support for heterogeneous GPU configurations. Key features:
 
 - Uneven token partitioning across ranks based on GPU capabilities
-- Online softmax for correct attention merging across variable-sized shards
 - Async P2P communication overlapped with compute via separate CUDA streams
-- Custom Triton kernels for block-wise attention statistics
+- Uses aten._scaled_dot_product_flash_attention for block-wise attention
 
 The main entry point is `ring_attention()`, which is called from LLaMABlock
 when the "ring" distributed strategy is enabled.
@@ -15,23 +14,11 @@ when the "ring" distributed strategy is enabled.
 import math
 import torch
 from torch import Tensor
-from typing import List, Optional, Tuple
-from torch.nn.attention.flex_attention import (
-      flex_attention,
-      AuxRequest,
-      create_block_mask,
-  )
+from typing import Optional, Tuple
+
+aten = torch.ops.aten
 from fms.modules.attention import MultiHeadAttention
 from fms.distributed.strategy import RingAttentionStrategy
-
-# Use Triton only when block size is big enough (Q_len*K_len)
-_TRITON_MIN_WORK = 4096000000000
-try:
-    from .triton_block import block_softmax_stats_triton
-    _HAS_TRITON = True
-except ImportError:
-    _HAS_TRITON = False
-_HAS_TRITON = False
 
 
 def ring_forward(
@@ -239,60 +226,26 @@ def _compute_qkv_and_rope(
     return q, k, v
 
 
-def _online_softmax_update(
-    attn_weights: Tensor,
-    v_block: Tensor,
-    numerator: Tensor,
-    denominator: Tensor,
-    prev_max_score: Tensor,
-) -> Tuple[Tensor, Tensor, Tensor]:
+def _is_causal_behavior(rank: int, world_size: int, source_rank: int, is_causal: bool) -> str:
     """
-    Online softmax update for a single block of attention.
+    Determine causal behavior for a given KV block in ring attention.
+
+    For the diagonal block (source_rank == rank), use is_causal=True.
+    For blocks where KV comes from an earlier rank (source_rank < rank),
+    all keys are in the past → full attention (no causal mask needed).
+    For blocks where KV comes from a later rank (source_rank > rank),
+    all keys are in the future → skip entirely.
+
+    Returns: "causal", "full", or "skip"
     """
-    # Find max in current block
-    block_max = attn_weights.max(dim=-1, keepdim=True).values
-
-    # Update global max
-    new_max_score = torch.maximum(prev_max_score, block_max)
-    # Correction factor for previous accumulations
-    correction = torch.exp(prev_max_score - new_max_score)
-    # Exp weights for current block (shifted by new max)
-    exp_weights = torch.exp(attn_weights - new_max_score)
-    # Update numerator and denominator with correction
-    numerator = (numerator * correction) + torch.matmul(exp_weights, v_block)
-    denominator = (denominator * correction) + exp_weights.sum(dim=-1, keepdim=True)
-
-    return numerator, denominator, new_max_score
-
-
-def _has_offdiag_contribution(strategy: RingAttentionStrategy, q_start: int, q_len: int, causal: bool) -> bool:
-    """
-    Check if any off-diagonal block will CONTRIBUTE (not just exist).
-
-    With causal masking, an off-diagonal block is fully masked when:
-        k_start > q_end  (all keys are "future" relative to all queries)
-
-    For 2 GPUs:
-        - Rank 0: q_end = N/2-1, off-diag k_start = N/2 → k_start > q_end → MASKED
-        - Rank 1: q_end = N-1,   off-diag k_start = 0   → k_start ≤ q_end → CONTRIBUTES
-
-    Returns True if merging is needed (can't use Flash Attention shortcut).
-    """
-    if strategy.world_size == 1:
-        return False
-    if not causal:
-        return True  # All blocks contribute in non-causal
-
-    q_end = q_start + q_len - 1
-
-    # Check each other rank's K block
-    for i in range(1, strategy.world_size):
-        source_rank = (strategy.rank - i) % strategy.world_size
-        k_start = strategy.block_starts[source_rank]
-        # If k_start <= q_end, some K positions are not masked → contributes
-        if k_start <= q_end:
-            return True
-    return False
+    if not is_causal:
+        return "full"
+    if source_rank == rank:
+        return "causal"
+    elif source_rank < rank:
+        return "full"
+    else:
+        return "skip"
 
 
 def _compute_attention_ring_pass_kv(
@@ -326,41 +279,30 @@ def _compute_attention_ring_pass_kv(
 
           # 2. Identify source block
           source_rank = (strategy.rank - i) % strategy.world_size
-          block_offset = strategy.block_starts[source_rank]
 
           # 3. Compute attention on current block
           if num_valid_tokens > 0 and cur_len > 0:
-              k_start = block_offset
-              q_end = q_start + num_valid_tokens - 1
-              is_fully_masked = causal and (k_start > q_end)
+              is_causal_behavior = _is_causal_behavior(
+                  strategy.rank, strategy.world_size, source_rank, causal
+              )
 
-              if not is_fully_masked:
-                  # Build score_mod with global index offsets for causal masking
-                  _q_off = q_start
-                  _k_off = block_offset
+              if is_causal_behavior != "skip":
+                  k_block = cur_k[:, :, :cur_len].contiguous()
+                  v_block = cur_v[:, :, :cur_len].contiguous()
 
-                  if causal:
-                      def score_mod(score, b, h, q_idx, kv_idx):
-                          return torch.where(
-                              q_idx + _q_off >= kv_idx + _k_off,
-                              score,
-                              torch.tensor(float("-inf")),
-                          )
-                  else:
-                      score_mod = None
-
-                  # flex_attention returns normalized output + lse
-                  block_out, aux = flex_attention(
+                  # aten._scaled_dot_product_flash_attention returns:
+                  # (out, logsumexp, cumulative_seq_len_q, cumulative_seq_len_k,
+                  #  max_q, max_k, philox_seed, philox_offset, debug_attn_mask)
+                  block_out, block_logsumexp, *_rest = aten._scaled_dot_product_flash_attention(
                       q,
-                      cur_k[:, :, :cur_len].contiguous(),
-                      cur_v[:, :, :cur_len].contiguous(),
-                      score_mod=score_mod,
-                      scale=1.0 / scale, 
-                      return_aux=AuxRequest(lse=True),
+                      k_block,
+                      v_block,
+                      is_causal=is_causal_behavior == "causal",
+                      scale=1.0 / scale,
                   )
 
-                  # aux.lse shape: [B, H, Q] -> [B, H, Q, 1]
-                  block_lse = aux.lse.unsqueeze(-1).to(accum_dtype)
+                  # block_logsumexp shape: [B, H, Q] -> [B, H, Q, 1]
+                  block_lse = block_logsumexp.unsqueeze(-1).to(accum_dtype)
                   block_out = block_out.to(accum_dtype)
 
                   out_acc, lse_acc = _merge_out_lse(out_acc, lse_acc, block_out, block_lse)
@@ -382,32 +324,6 @@ def _compute_attention_ring_pass_kv(
           return torch.empty((B, H, 0, Dv), device=q.device, dtype=q.dtype)
 
       return out_acc.to(q.dtype)
-def _compute_attention_ring_pass_q():
-    return
-
-def _attn_scores(
-    Q: Tensor,
-    K: Tensor,
-    query_indices: Tensor, # global indices for queries in Q
-    key_indices: Tensor,   # global indices for keys in K
-    scale: float,
-    mask: Optional[Tensor],
-    causal: bool,
-) -> Tensor:
-    batch_size, nheads, num_q, _ = Q.shape
-    num_k = K.shape[2]
-    if num_q == 0 or num_k == 0:
-        return Q.new_empty((batch_size, nheads, num_q, num_k))
-
-    scores = torch.matmul(Q / scale, K.transpose(-2, -1))
-    if mask is not None:
-        scores = scores + mask.to(scores.dtype)
-    if causal:
-        # build a [1,1,q_len,k_len] mask where key_pos > query_pos
-        future_mask = (key_indices[None, :] > query_indices[:, None])
-        future_mask = future_mask.unsqueeze(0).unsqueeze(0)
-        scores = scores.masked_fill(future_mask, float("-inf"))
-    return scores
 
 
 def _merge_out_lse(
@@ -423,102 +339,3 @@ def _merge_out_lse(
           + torch.exp(block_lse - new_lse) * block_out
       )
       return out_acc, new_lse
-def _online_softmax_merge_stats(
-    z_block: Tensor,      # [B, H, Q, D_v]
-    l_block: Tensor,      # [B, H, Q, 1]
-    m_block: Tensor,      # [B, H, Q, 1]
-    numerator: Tensor,    # [B, H, Q, D_v]
-    denominator: Tensor,  # [B, H, Q, 1]
-    prev_max_score: Tensor,  # [B, H, Q, 1]
-) -> Tuple[Tensor, Tensor, Tensor]:
-    """
-    Merge a new block's softmax stats (z_block, l_block, m_block)
-    into global (numerator, denominator, prev_max_score).
-    """
-    # new global max per query
-    new_max = torch.maximum(prev_max_score, m_block)
-
-    # correction factors
-    corr_prev  = torch.exp(prev_max_score - new_max)   # for old accumulators
-    corr_block = torch.exp(m_block - new_max)          # for this block
-
-    # merge
-    numerator   = numerator * corr_prev  + z_block * corr_block
-    denominator = denominator * corr_prev + l_block * corr_block
-
-    return numerator, denominator, new_max
-
-def _block_softmax_stats_naive(
-    Q: Tensor,           # [B, H, Q_block, D_k]
-    K: Tensor,           # [B, H, K_block, D_k]
-    V: Tensor,           # [B, H, K_block, D_v]
-    query_indices: Tensor,  # [Q_block] global positions
-    key_indices: Tensor,    # [K_block] global positions
-    scale: float,
-    mask: Optional[Tensor],
-    causal: bool,
-) -> Tuple[Tensor, Tensor, Tensor]:
-    """
-    Compute per-query block stats:
-        m_block: max logits in this block
-        l_block: sum_j exp(S_ij - m_block_i)
-        z_block: sum_j exp(S_ij - m_block_i) * V_j
-    using a naive matmul implementation.
-    """
-    B, H, Q_len, _ = Q.shape
-    K_len = K.shape[2]
-    Dv = V.shape[-1]
-
-    if Q_len == 0 or K_len == 0:
-        m_block = Q.new_full((B, H, Q_len, 1), float("-inf"))
-        l_block = Q.new_zeros((B, H, Q_len, 1))
-        z_block = Q.new_zeros((B, H, Q_len, Dv))
-        return z_block, l_block, m_block
-
-    # 1. logits
-    scores = torch.matmul(Q / scale, K.transpose(-2, -1))  # [B, H, Q_len, K_len]
-
-    # 2. apply mask (padding + causal)
-    if mask is not None:
-        scores = scores + mask.to(scores.dtype)
-
-    if causal:
-        # future positions: key_idx > query_idx
-        future_mask = (key_indices[None, :] > query_indices[:, None])  # [Q_len, K_len]
-        future_mask = future_mask.unsqueeze(0).unsqueeze(0)            # [1,1,Q,K]
-        scores = scores.masked_fill(future_mask, float("-inf"))
-
-    # 3. m_block: per-query max
-    m_block = scores.max(dim=-1, keepdim=True).values  # [B,H,Q,1]
-
-    # 4. l_block: per-query sumexp
-    exp_scores = torch.exp(scores - m_block)           # [B,H,Q,K]
-    l_block = exp_scores.sum(dim=-1, keepdim=True)     # [B,H,Q,1]
-
-    # 5. z_block: per-query weighted sum of V
-    z_block = torch.matmul(exp_scores, V)              # [B,H,Q,Dv]
-
-    return z_block, l_block, m_block
-
-
-
-def _block_softmax_stats(
-    Q: Tensor,
-    K: Tensor,
-    V: Tensor,
-    query_indices: Tensor,
-    key_indices: Tensor,
-    scale: float,
-    mask: Optional[Tensor],
-    causal: bool,
-) -> Tuple[Tensor, Tensor, Tensor]:
-    # Triton path
-    if _HAS_TRITON and Q.is_cuda:
-        return block_softmax_stats_triton(
-            Q, K, V, query_indices, key_indices, scale, mask, causal
-        )
-
-    # Fallback: pure PyTorch, correct but slower
-    return _block_softmax_stats_naive(
-        Q, K, V, query_indices, key_indices, scale, mask, causal
-    )
