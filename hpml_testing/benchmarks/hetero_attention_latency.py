@@ -1,0 +1,152 @@
+"""Heterogeneous ring attention latency benchmark (attention-only, no full model)."""
+
+import argparse
+import time
+from pathlib import Path
+
+import torch
+import torch.distributed as dist
+
+from fms.distributed.strategy import RingAttentionStrategy
+from fms.modules.attention import MultiHeadAttention
+from fms.modules.positions import RotaryEmbedding
+from fms.distributed.ring_attention import _ring_attention_pass_kv, reset_layer_counter
+
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from utils import (
+    compute_block_lens,
+    load_performance_profile,
+    get_performance_for_mps,
+)
+
+
+def setup_distributed(rank, world_size):
+    """Initializes torch.distributed."""
+    dist.init_process_group(
+        backend="nccl",
+        rank=rank,
+        world_size=world_size,
+        init_method="tcp://127.0.0.1:29500",
+    )
+    torch.cuda.set_device(rank)
+
+
+def get_model_and_input(rank, world_size, seq_len, n_heads, emb_dim, block_lens):
+    """Creates a dummy attention module and input tensor."""
+    head_dim = emb_dim // n_heads
+    rope = RotaryEmbedding(dim=head_dim)
+
+    attn_module = MultiHeadAttention(
+        emb_dim,
+        emb_kq=head_dim,
+        emb_v=head_dim,
+        nheads=n_heads,
+        kvheads=n_heads,
+        position_encoder=rope,
+    ).cuda().to(torch.bfloat16)
+
+    full_input = torch.randn(
+        1, seq_len, emb_dim, device="cuda", dtype=torch.bfloat16,
+    )
+
+    strategy = RingAttentionStrategy(block_lens=block_lens)
+    local_input = strategy.shard_input(full_input)
+
+    return attn_module, local_input, strategy
+
+
+def run_benchmark(rank, world_size, n_steps, attn_module, local_input, strategy):
+    """Runs the benchmark and returns the average latency."""
+    # Warmup
+    for _ in range(5):
+        _ring_attention_pass_kv(
+            x_norm=local_input,
+            attn_module=attn_module,
+            strategy=strategy,
+            valid_len=strategy.local_q_len,
+            causal=True,
+        )
+        dist.barrier()
+
+    torch.cuda.synchronize()
+
+    start_time = time.time()
+    for _ in range(n_steps):
+        _ring_attention_pass_kv(
+            x_norm=local_input,
+            attn_module=attn_module,
+            strategy=strategy,
+            valid_len=strategy.local_q_len,
+            causal=True,
+        )
+
+    dist.barrier()
+    torch.cuda.synchronize()
+    end_time = time.time()
+
+    avg_latency_ms = (end_time - start_time) / n_steps * 1000
+    return avg_latency_ms
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Heterogeneous Ring Attention Benchmark")
+    parser.add_argument("--rank", type=int, required=True)
+    parser.add_argument("--world-size", type=int, required=True)
+    parser.add_argument("--seq-len", type=int, default=4096)
+    parser.add_argument("--n-heads", type=int, default=32)
+    parser.add_argument("--emb-dim", type=int, default=4096)
+    parser.add_argument("--n-steps", type=int, default=5)
+    parser.add_argument("--split-type", type=str, choices=["even", "uneven", "lut", "formula"], default="even")
+    parser.add_argument("--slowdown-factor", type=float, default=0.5)
+    parser.add_argument("--use-perf-profile", type=str, default=None)
+    parser.add_argument("--rank-mps", type=str, default="100,50")
+
+    args = parser.parse_args()
+
+    setup_distributed(args.rank, args.world_size)
+
+    # Compute block lengths using shared utility
+    rank_mps_list = [float(p) for p in args.rank_mps.split(",")]
+    block_lens = compute_block_lens(
+        args.seq_len, args.world_size, args.split_type,
+        slowdown_factor=args.slowdown_factor,
+        perf_profile_path=args.use_perf_profile,
+        rank_mps_list=rank_mps_list,
+    )
+
+    attn_module, local_input, strategy = get_model_and_input(
+        args.rank, args.world_size, args.seq_len, args.n_heads, args.emb_dim, block_lens,
+    )
+
+    if args.rank == 0:
+        print(f"Running benchmark with '{args.split_type}' split.")
+        print(f"Sequence Length: {args.seq_len}, Block lengths: {block_lens}")
+
+    reset_layer_counter()
+    dist.barrier()
+
+    latency = run_benchmark(args.rank, args.world_size, args.n_steps, attn_module, local_input, strategy)
+
+    # Gather results to rank 0
+    output = [None] * args.world_size
+    dist.gather_object(
+        {"rank": args.rank, "latency": latency, "tokens": strategy.local_q_len},
+        output if args.rank == 0 else None,
+        dst=0,
+    )
+
+    if args.rank == 0:
+        total_latency = 0
+        print("\n--- Results ---")
+        for res in output:
+            print(f"Rank {res['rank']} ({res['tokens']} tokens): {res['latency']:.2f} ms")
+            total_latency = max(total_latency, res["latency"])
+        print(f"Overall Latency (max of ranks): {total_latency:.2f} ms")
+        print("-----------------\n")
+
+    dist.destroy_process_group()
+
+
+if __name__ == "__main__":
+    main()

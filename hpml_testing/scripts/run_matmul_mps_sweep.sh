@@ -17,7 +17,7 @@ for pct in $MPS_PCTS; do
   export CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$pct
   for n in $SIZES; do
     echo "=== MPS=${pct}% size=${n} ==="
-    line=$(python3 "$SCRIPT_DIR/benchmark_single_gpu_matmul.py" \
+    line=$(python3 "$SCRIPT_DIR/../benchmarks/single_gpu_matmul.py" \
       --sizes "$n" \
       --dtype "$DTYPE" \
       --num-iters "$NUM_ITERS" \

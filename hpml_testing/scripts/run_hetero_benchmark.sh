@@ -16,7 +16,7 @@ echo "=========================================================="
 echo "  Running Experiment 1: EVEN split with 1 slow GPU"
 echo "=========================================================="
 
-python3 hpml_testing/benchmark_hetero_latency.py \
+python3 hpml_testing/benchmarks/hetero_attention_latency.py \
     --rank 0 \
     --world-size $WORLD_SIZE \
     --seq-len $SEQ_LEN \
@@ -25,7 +25,7 @@ python3 hpml_testing/benchmark_hetero_latency.py \
     --split-type even & \
 PID_RANK_0=$!
 
-CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$SLOWDOWN_PERCENTAGE python3 hpml_testing/benchmark_hetero_latency.py \
+CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$SLOWDOWN_PERCENTAGE python3 hpml_testing/benchmarks/hetero_attention_latency.py \
     --rank 1 \
     --world-size $WORLD_SIZE \
     --seq-len $SEQ_LEN \
@@ -45,7 +45,7 @@ echo "=========================================================="
 echo "  Running Experiment 2: UNEVEN split with 1 slow GPU"
 echo "=========================================================="
 
-python3 hpml_testing/benchmark_hetero_latency.py \
+python3 hpml_testing/benchmarks/hetero_attention_latency.py \
     --rank 0 \
     --world-size $WORLD_SIZE \
     --seq-len $SEQ_LEN \
@@ -55,7 +55,7 @@ python3 hpml_testing/benchmark_hetero_latency.py \
     --slowdown-factor $SLOWDOWN_FACTOR & \
 PID_RANK_0=$!
 
-CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$SLOWDOWN_PERCENTAGE python3 hpml_testing/benchmark_hetero_latency.py \
+CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$SLOWDOWN_PERCENTAGE python3 hpml_testing/benchmarks/hetero_attention_latency.py \
     --rank 1 \
     --world-size $WORLD_SIZE \
     --seq-len $SEQ_LEN \
@@ -75,7 +75,7 @@ echo "=========================================================="
 echo "  Running Experiment 3: LUT-based split with 1 slow GPU"
 echo "=========================================================="
 
-python3 hpml_testing/benchmark_hetero_latency.py \
+python3 hpml_testing/benchmarks/hetero_attention_latency.py \
     --rank 0 \
     --world-size $WORLD_SIZE \
     --seq-len $SEQ_LEN \
@@ -86,7 +86,7 @@ python3 hpml_testing/benchmark_hetero_latency.py \
     --rank-mps "100,${SLOWDOWN_PERCENTAGE}" & \
 PID_RANK_0=$!
 
-CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$SLOWDOWN_PERCENTAGE python3 hpml_testing/benchmark_hetero_latency.py \
+CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$SLOWDOWN_PERCENTAGE python3 hpml_testing/benchmarks/hetero_attention_latency.py \
     --rank 1 \
     --world-size $WORLD_SIZE \
     --seq-len $SEQ_LEN \

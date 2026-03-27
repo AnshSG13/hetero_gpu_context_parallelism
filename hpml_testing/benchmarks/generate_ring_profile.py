@@ -8,7 +8,7 @@ import time
 SEQ_LEN = 8192 # Use a representative sequence length for the profile
 MPS_SWEEP = [100, 90, 80, 70, 60, 50, 40, 30, 20, 10]
 OUTPUT_CSV_PATH = "hpml_testing/results/ring_attention_profile.csv"
-BENCHMARK_SCRIPT = "hpml_testing/benchmark_hetero_latency.py"
+BENCHMARK_SCRIPT = "hpml_testing/benchmarks/hetero_attention_latency.py"
 
 def parse_latency_from_output(output_string):
     """

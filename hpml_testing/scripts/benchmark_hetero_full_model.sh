@@ -89,7 +89,7 @@ for SEQ_LEN in "${SEQ_LENGTHS[@]}"; do
         RANK=0 \
         LOCAL_RANK=0 \
         WORLD_SIZE=$WORLD_SIZE \
-        python benchmark_hetero_full_model.py $COMMON_ARGS &
+        python benchmarks/hetero_full_model.py $COMMON_ARGS &
         PID_RANK0=$!
 
         # Launch Rank 1 (GPU1 throttled via MPS)
@@ -100,7 +100,7 @@ for SEQ_LEN in "${SEQ_LENGTHS[@]}"; do
         RANK=1 \
         LOCAL_RANK=0 \
         WORLD_SIZE=$WORLD_SIZE \
-        python benchmark_hetero_full_model.py $COMMON_ARGS &
+        python benchmarks/hetero_full_model.py $COMMON_ARGS &
         PID_RANK1=$!
 
         # Wait for both ranks

@@ -33,12 +33,12 @@ mkdir -p "$RESULTS_DIR"
 nvidia-smi topo -m
 
 cleanup_processes() {
-    pkill -9 -f "torchrun.*benchmark_ring.py" 2>/dev/null || true
-    pkill -9 -f "benchmark_ring.py" 2>/dev/null || true
+    pkill -9 -f "torchrun.*benchmarks/ring_vs_regular.py" 2>/dev/null || true
+    pkill -9 -f "benchmarks/ring_vs_regular.py" 2>/dev/null || true
     sleep 2
 }
 
-# benchmark_ring.py already runs both Ring and Regular strategies internally
+# benchmarks/ring_vs_regular.py already runs both Ring and Regular strategies internally
 run_benchmark() {
     local num_tokens=$1
     local num_gpus=$2
@@ -51,7 +51,7 @@ run_benchmark() {
     MASTER_PORT=$master_port PYTHONPATH="$SCRIPT_DIR/../:$PYTHONPATH" torchrun \
         --nproc_per_node=$num_gpus \
         --master_port=$master_port \
-        benchmark_ring.py \
+        benchmarks/ring_vs_regular.py \
         --architecture hf_pretrained \
         --model_path "$MODEL_PATH" \
         --device_type cuda \

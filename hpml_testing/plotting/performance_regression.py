@@ -7,7 +7,8 @@ import plotly.graph_objects as go
 # ============================================================
 # CONFIG
 # ============================================================
-CSV_PATH = "./results/matmul_mps_sweep.csv"
+from pathlib import Path
+CSV_PATH = str(Path(__file__).resolve().parents[1] / "results" / "matmul_mps_sweep.csv")
 POLY_DEGREE = 2   
 
 # ============================================================

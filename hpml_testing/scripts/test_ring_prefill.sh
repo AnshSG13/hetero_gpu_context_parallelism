@@ -14,4 +14,4 @@ echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
 nvidia-smi
 
 cd /work/pi_jaimedavila_umass_edu/asadhgauri_umass_edu/hpml/hetero_gpu_inference/hpml-heterogeneous-ring-attention/external/ibm_fms_ring/temp_testing
-torchrun --nproc_per_node=2 test_ring_prefill.py
+torchrun --nproc_per_node=2 tests/test_ring_prefill.py

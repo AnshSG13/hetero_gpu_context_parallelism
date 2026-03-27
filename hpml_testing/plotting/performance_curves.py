@@ -6,7 +6,8 @@ from scipy.interpolate import PchipInterpolator
 # -----------------------------
 # CONFIG
 # -----------------------------
-CSV_PATH = "./results/matmul_mps_sweep.csv"
+from pathlib import Path
+CSV_PATH = str(Path(__file__).resolve().parents[1] / "results" / "matmul_mps_sweep.csv")
 
 # -----------------------------
 # LOAD DATA
